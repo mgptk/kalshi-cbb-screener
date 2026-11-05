@@ -45,6 +45,9 @@ REGION = "us"
 BOOKMAKER_KEYS = {"DraftKings": "draftkings", "BetMGM": "betmgm"}
 """Display name -> the API's bookmaker key."""
 
+LOW_CREDITS = 50
+"""Below this, the board says so rather than waiting to go blank."""
+
 MAX_WORDS_DROPPED = 2
 """How much of a trailing mascot to try removing: "Blue Devils" is two words."""
 
@@ -193,6 +196,13 @@ class OddsApiClient:
 
         self._index(games)
         self.loaded_ok = True
+        if self.credits_remaining is not None and self.credits_remaining <= LOW_CREDITS:
+            # Worth saying before the month runs out and the board quietly
+            # loses its book columns.
+            self.note = (
+                f"{self.credits_remaining} Odds API credits left this month "
+                f"(one per refresh)"
+            )
         log.info(
             "the-odds-api: %d games, %s credits left",
             len(games),
