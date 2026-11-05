@@ -47,27 +47,49 @@ POSITIVE = "#16a34a"
 NEGATIVE = "#dc2626"
 
 
-def browser_scrapes() -> bool:
-    """Whether this host can drive a browser, and so read the books and KenPom.
-
-    True everywhere a person runs it; a deployment that cannot says so once in
-    its secrets. Reading secrets throws when there is no secrets file at all,
-    which is the ordinary local case.
-    """
+def _secret(name: str, default: Any = None) -> Any:
+    """One setting, or the default. No secrets file at all is the local case."""
     try:
-        return bool(st.secrets.get("browser_scrapes", True))
-    except Exception:  # noqa: BLE001 - no secrets file is not a problem
-        return True
+        return st.secrets.get(name, default)
+    except Exception:  # noqa: BLE001 - not having one is not a problem
+        return default
+
+
+def browser_scrapes() -> bool:
+    """Whether this host can drive a browser, and so scrape boards and KenPom.
+
+    True everywhere a person runs it; a deployment that cannot says so in its
+    secrets.
+    """
+    return bool(_secret("browser_scrapes", True))
+
+
+def odds_api_key() -> str:
+    """The Odds API key, if one is configured.
+
+    With it, a host that cannot drive a browser still gets DraftKings and
+    BetMGM - the same two books, resold over plain HTTPS - and so keeps the
+    composite and the Edge columns that are the point of the board.
+    """
+    return str(_secret("odds_api_key", "") or "")
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def load(days: int, orderbooks: bool, browser: bool, refresh_token: int) -> Refresh:
+def load(
+    days: int, orderbooks: bool, browser: bool, api_key: str, refresh_token: int
+) -> Refresh:
     """One fetch, cached.
 
     `refresh_token` is not used in the body - it is in the signature so that
-    pressing Refresh is a different cache key and nothing else is.
+    pressing Refresh is a different cache key and nothing else is. The key is
+    in the signature for the same reason: adding one should re-fetch.
     """
-    return refresh_all(days=days, with_orderbooks=orderbooks, use_browser=browser)
+    return refresh_all(
+        days=days,
+        with_orderbooks=orderbooks,
+        use_browser=browser,
+        odds_api_key=api_key or None,
+    )
 
 
 def sidebar() -> dict[str, Any]:
@@ -138,33 +160,35 @@ def header(data: Refresh) -> None:
         st.caption(f"as of {stamp}")
 
 
-def notes(section: Any, browser: bool) -> None:
+def notes(section: Any, browser: bool, books_from_api: bool) -> None:
     counts = section.to_dict()["counts"]
     st.caption(
         f"{section.window_label} · {counts['games']} games · "
         f"{counts['with_composite']} with a book composite · "
         f"{counts['with_bpi']} with BPI · "
-        f"{counts['with_kenpom']} with both KenPom ranks"
+        f"{counts['with_ratings']} with both {section.rating_label} ranks"
     )
-    if not browser:
-        # One honest sentence beats three scrapers each reporting their own
+    if not browser and not books_from_api:
+        # One honest sentence beats two scrapers each reporting their own
         # failure, which reads like something broke rather than a host that was
         # never going to be able to do it.
         st.info(
-            "This copy has no browser to drive, so the **book prices, the composite, "
-            "Edge and the KenPom ranks are not available** here - those come from "
-            "scraping. Kalshi's prices and ESPN's BPI are fetched over plain HTTP and "
-            "are live. Run it locally for the full board.",
+            "No browser here and no Odds API key, so the **book prices, the composite "
+            "and Edge are not available** - those two books have to be scraped. "
+            "Kalshi, ESPN's BPI and the "
+            f"{section.rating_label} ranks are live. Add an `odds_api_key` to the "
+            "app's secrets to get the book columns back.",
             icon="ℹ️",
         )
     else:
-        problems = [
-            f"**{book}** - {note}" for book, note in section.book_notes.items() if note
-        ]
-        if section.kenpom_note:
-            problems.append(f"**KenPom** - {section.kenpom_note}")
-        for problem in problems:
-            st.warning(problem, icon="⚠️")
+        # With a book source in play, each book's own note is worth seeing:
+        # that is a feed that should have worked and did not. Without one they
+        # would only repeat the sentence above.
+        for book, note in section.book_notes.items():
+            if note:
+                st.warning(f"**{book}** - {note}", icon="⚠️")
+    if section.rating_note:
+        st.warning(f"**{section.rating_label}** - {section.rating_note}", icon="⚠️")
     if section.beyond_window:
         st.caption(
             f"{section.beyond_window} further Kalshi games tip off beyond this window - "
@@ -202,7 +226,7 @@ def style(board: Board) -> Any:
     return styler.format(formats, na_rep="--")
 
 
-def column_config(board: Board) -> dict[str, Any]:
+def column_config(board: Board, rank_label: str, rank_source: str) -> dict[str, Any]:
     config: dict[str, Any] = {
         TICKER: None,  # carried for the detail panel, not shown
         "Tip-off": st.column_config.TextColumn(
@@ -222,9 +246,9 @@ def column_config(board: Board) -> dict[str, Any]:
             config[column] = st.column_config.NumberColumn(
                 column, help="BPI minus the Kalshi ask, in points. Positive: Kalshi is cheap."
             )
-        elif column.startswith("KP "):
+        elif column.startswith(f"{rank_label} "):
             config[column] = st.column_config.NumberColumn(
-                column, help="KenPom rank, 1 to 365", format="%d"
+                column, help=f"{rank_source} rank, 1 to 365 (1 is best)", format="%d"
             )
     return config
 
@@ -273,26 +297,28 @@ def main() -> None:
 
     options = sidebar()
     browser = browser_scrapes()
+    api_key = odds_api_key()
     token = st.session_state.get("refresh_token", 0)
     waiting = (
         "Scraping the books, KenPom and Kalshi. This takes a minute or two."
         if browser
-        else "Fetching Kalshi and ESPN."
+        else "Fetching Kalshi, ESPN, the odds feed and the ratings."
     )
     with st.spinner(waiting):
-        data = load(options["days"], options["orderbooks"], browser, token)
+        data = load(options["days"], options["orderbooks"], browser, api_key, token)
 
     header(data)
-    notes(data.moneylines, browser)
+    notes(data.moneylines, browser, bool(api_key))
 
     board = build_board(
         data.moneylines,
         books=BOOKS,
         pairing=options["pairing"],
         american=options["american"],
-        show_books=options["show_books"] and browser,
-        show_kenpom=browser,
-        show_composite=browser,
+        show_books=options["show_books"] and (browser or bool(api_key)),
+        show_ranks=True,
+        rank_label=data.moneylines.rating_short_label,
+        show_composite=browser or bool(api_key),
         show_bpi=options["show_bpi"],
         show_volume=options["show_volume"],
         show_depth=any(
@@ -303,11 +329,21 @@ def main() -> None:
     )
     selection = st.dataframe(
         style(board),
-        column_config=column_config(board),
+        column_config=column_config(
+            board,
+            data.moneylines.rating_short_label,
+            data.moneylines.rating_label,
+        ),
         hide_index=True,
         use_container_width=True,
         on_select="rerun",
         selection_mode="single-row",
     )
     detail(data.moneylines, selection, board)
+
+    book_source = "The Odds API" if api_key else ("scraped boards" if browser else "none")
+    st.caption(
+        f"Prices: Kalshi · Books: {book_source} · "
+        f"Ranks: {data.moneylines.rating_label} · Model: ESPN BPI"
+    )
 

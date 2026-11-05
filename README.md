@@ -18,7 +18,8 @@ Serves <http://localhost:8501>. Terminal view:
 | Column | Meaning |
 | --- | --- |
 | **Tip-off** | ESPN's published start, in your own time zone; `approx` marks the rare game ESPN does not carry |
-| **Team** | the school, with its KenPom rank in front (1–365; a dash means no rank matched) |
+| **KP / TRk** | the school's rank, 1–365, from KenPom or Barttorvik's T-Rank — the header says which |
+| **Fav / Dog** | the two schools; the rank is its own column so both sort as they look |
 | **Kalshi ask** | what it costs to buy Yes on that team right now |
 | **DraftKings / BetMGM** | each book's own posted American price, vig included |
 | **Composite** | devigged, equal-weighted across the books carrying the game |
@@ -32,7 +33,7 @@ the price you can actually take; an edge against a midpoint is an edge against a
 price nobody is showing.
 
 **One row per game, two columns per measure.** Every measure a team has —
-Kalshi ask, each book, the composite, Edge, BPI, BPI−K, the KenPom rank —
+Kalshi ask, each book, the composite, Edge, BPI, BPI−K, the rank —
 appears twice, once per side, so clicking a column header sorts the whole board
 on the side you mean. That is why the old four-way sort dropdown is gone: the
 HTML board gave a game three rows, so a sort had to move whole blocks and
@@ -52,25 +53,49 @@ Only the prices themselves switch, and in American mode they become text.
 
 Hover titles have nowhere to live in a dataframe, so **selecting a row** opens
 the detail panel underneath: both two-sided Kalshi quotes, each book's price or
-its reason for a blank, the KenPom lines, the BPI margin and Kalshi's mid-sum.
+its reason for a blank, the rating lines, the BPI margin and Kalshi's mid-sum.
 The per-game warnings that used to be tags — `approx time`, `neutral`,
 `no ESPN match`, `no moneyline offered`, an unreadable book — are collected
 in the **Flags** column.
 
-### KenPom ranks
+## Where each number comes from
 
-The ratings table on kenpom.com's front page is public — the paywall is on the
-per-team pages, not the ranking — but Cloudflare answers a plain HTTP request
-with its interstitial, so `cbb/kenpom.py` tries a request first and otherwise
-renders the page in the same Selenium browser the books already need. It does
-not try to defeat a challenge: if the browser is shown one too, the board says
-so in a note and renders without ranks. A successful read is kept for the rest
-of the Eastern day, since the ranks only move overnight, so pressing Refresh
-does not pay for another browser launch. `--no-kenpom` skips it entirely.
+Four feeds, and two of them cannot be fetched the easy way. This is the whole
+reason the project has the shape it does, so it is worth stating plainly:
 
-Schools are matched by the shared normaliser in `core/teams.py`. On a 26-game
-slate that resolved 51 of 52 teams; the miss was an NAIA school KenPom does not
-rate, which is the honest answer rather than a bad match.
+| Feed | Plain HTTP | Needs a browser |
+| --- | --- | --- |
+| Kalshi prices | yes | |
+| ESPN schedule and BPI | yes | |
+| DraftKings, BetMGM | **no** — 403 to any non-browser client | yes, or The Odds API |
+| KenPom ranks | **no** — Cloudflare challenge | yes, or T-Rank instead |
+
+Those 403s were measured from a residential address, on the same machine whose
+browser scrape succeeds, so the block is on the client's fingerprint rather
+than the IP — which is also why a cloud VM would not have helped. DraftKings
+does embed a `window.__INITIAL_STATE__` in its board HTML, but its odds
+containers come down empty (`"eventGroups":{}`, `"outcomes":[]`); the prices
+arrive by XHR after the page boots.
+
+So `cbb/refresh.py` picks a source per feed, in one place:
+
+- **Books.** No key: scrape both boards in a real browser. With an Odds API
+  key: the same two books' moneylines over plain HTTPS, one credit per refresh
+  (`markets=h2h` x `regions=us`), which the free tier's 500 a month covers
+  about sixteen times a day. The prices arrive as American odds, which is what
+  `build_quote` already devigs, so the composite and Edge are unchanged.
+- **Ranks.** `--ratings auto` takes KenPom where a browser can clear its
+  challenge and Barttorvik's T-Rank everywhere else. Both are tempo-free
+  ratings of the same kind; the numbers differ and the column header says
+  which you are looking at. On a 102-game slate each matched all 204 schools.
+
+### Running it without a browser
+
+```bash
+.venv/Scripts/python -m cbb.cli --no-browser --odds-api-key KEY
+```
+
+That is exactly what a hosted copy does.
 
 ## Layout
 
@@ -83,7 +108,11 @@ cbb/             everything that knows it is basketball
   espn.py        ESPN schedule (dates, not weeks) + the BPI predictor
   books.py       the two books, pointed at their NCAAM boards
   sections.py    the moneyline section
-  kenpom.py      the public ratings table, for the ranks
+  refresh.py     picks a source per feed for this host
+  kenpom.py      KenPom's ratings table, read in a browser
+  torvik.py      T-Rank's ratings JSON, read over plain HTTP
+  ratings.py     what the board needs from either of them
+  oddsapi.py     the books over HTTPS, for hosts with no browser
   view.py        section -> one-row-per-game table (no UI import, tested alone)
   streamlit_app.py  the page: layout, caching, the detail panel
 streamlit_app.py the entry point `streamlit run` wants at the repository root
@@ -110,28 +139,27 @@ no secrets to leak into a public repository.
 
    ```toml
    browser_scrapes = false
+   odds_api_key = "your-key-here"
    ```
 
-### What a hosted copy cannot do
+   The key is yours to get, free, from <https://the-odds-api.com>. Without it
+   everything but the book columns still works.
 
-**The sportsbook and KenPom scrapes do not work there, and cannot be made to.**
-Both need a real browser: the books render their odds client-side, and KenPom
-sits behind Cloudflare. A Community Cloud container has no browser, and even
-with one, a datacenter IP is exactly what those sites turn away. That is what
-`browser_scrapes = false` is for — it stops the app spending a minute
-failing three times and makes it say, in one line at the top, which columns
-are missing.
+### What a hosted copy does
 
-| | Local | Hosted |
-| --- | --- | --- |
-| Tip-off, teams, Kalshi prices, volume | yes | yes |
-| ESPN BPI and BPI−K | yes | yes |
-| DraftKings / BetMGM, Composite, Edge | yes | **no** |
-| KenPom ranks | yes | **no** |
+`browser_scrapes = false` tells it not to attempt the scrapes, and it reads the
+substitutes instead: The Odds API for the books, T-Rank for the ranks. With
+both secrets set, a hosted copy shows the same columns as a local one.
 
-So the hosted board is a Kalshi-versus-BPI screener. If you want the book edges
-on your phone as well, the data has to be fetched where a browser exists —
-this machine — and published for the phone to read.
+| | Local | Hosted, with an Odds API key | Hosted, without |
+| --- | --- | --- | --- |
+| Tip-off, teams, Kalshi, volume | yes | yes | yes |
+| ESPN BPI and BPI−K | yes | yes | yes |
+| Ranks | KenPom | T-Rank | T-Rank |
+| DraftKings / BetMGM, Composite, Edge | yes | yes | **no** |
+
+Without a key the board still runs; it just has no book columns, and says so
+in a line at the top rather than leaving you to work it out.
 
 ### On a phone
 
@@ -245,6 +273,20 @@ misses turned up one general bug and a handful of school-name facts:
   Connecticut, UNO, Seattle U, New College, FDU) and are in the shared alias
   table. There is deliberately **no general "drop State" rule**: Illinois and
   Illinois State are different schools, and a blanket rule would merge them.
+- Each ratings source brought its own spellings: KenPom alone writes CSUN and
+  Cal Baptist, and Barttorvik keeps UMKC, Nebraska Omaha, Illinois Chicago,
+  Loyola MD and McNeese St. where Kalshi uses the current brand. All are in the
+  alias table, and with them both sources matched 204 of 204 schools on a
+  102-game window. One alias could never have fired: its key was
+  `university at albany`, but `normalize()` strips "university" as noise before
+  the lookup, so the key had to be `at albany`.
+- The Odds API is the odd one out: it attaches mascots ("Saint Louis
+  Billikens"). `cbb/oddsapi.py` also registers each game under its names with
+  trailing words removed, and **drops any pairing two games would both claim**
+  rather than guessing — losing a price is a dash, matching the wrong game is a
+  wrong number. Sides are compared school-to-school for the same reason: string
+  equality on "Wofford Terriers" versus "Wofford" quietly swapped the two
+  prices, which a test now pins.
 
 The four that still don't match are games ESPN's D-I scoreboard doesn't carry —
 mostly non-D-I exhibition opponents. They render with a "no ESPN match" tag and

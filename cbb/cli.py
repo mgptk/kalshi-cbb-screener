@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .kenpom import KenPomTeam
-from .refresh import refresh_all
+from .ratings import RatingTeam
+from .refresh import RATINGS_CHOICES, refresh_all
 from .sections import DEFAULT_DAYS, MoneylineSection
 
 
@@ -25,9 +25,9 @@ def _signed(value: Optional[float]) -> str:
     return "  -- " if value is None else f"{value * 100:+5.1f}"
 
 
-def _ranked(team: str, kenpom: Optional[KenPomTeam]) -> str:
-    """Prefixes the KenPom rank: Duke -> "1 Duke". Unranked schools go bare."""
-    return f"{kenpom.rank} {team}" if kenpom is not None else team
+def _ranked(team: str, rating: Optional[RatingTeam]) -> str:
+    """Prefixes the rank: Duke -> "1 Duke". Unranked schools go bare."""
+    return f"{rating.rank} {team}" if rating is not None else team
 
 
 def print_moneylines(section: MoneylineSection, limit: Optional[int] = None) -> None:
@@ -38,10 +38,10 @@ def print_moneylines(section: MoneylineSection, limit: Optional[int] = None) -> 
             print(f"  ! {book}: {note}")
     print(
         f"  {counts['games']} games | {counts['with_composite']} with a book composite "
-        f"| {counts['with_bpi']} with BPI | {counts['with_kenpom']} with both KenPom ranks"
+        f"| {counts['with_bpi']} with BPI | {counts['with_ratings']} with both ranks"
     )
-    if section.kenpom_note:
-        print(f"  ! KenPom: {section.kenpom_note}")
+    if section.rating_note:
+        print(f"  ! {section.rating_label}: {section.rating_note}")
     if section.beyond_window:
         print(f"  {section.beyond_window} further Kalshi games tip off beyond the window")
     header = (
@@ -58,8 +58,8 @@ def print_moneylines(section: MoneylineSection, limit: Optional[int] = None) -> 
         elif row.moneyline_off_everywhere:
             flag = "  off: no book prices this moneyline"
         matchup = (
-            f"{_ranked(game.away_team, row.kenpom_away)} @ "
-            f"{_ranked(game.home_team, row.kenpom_home)}"
+            f"{_ranked(game.away_team, row.rating_away)} @ "
+            f"{_ranked(game.home_team, row.rating_home)}"
         )
         print(
             f"  {matchup:<42.42} "
@@ -80,7 +80,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", metavar="PATH", help="also write the payload here")
     parser.add_argument("--orderbooks", action="store_true", help="fetch order-book depth")
     parser.add_argument("--no-browser", action="store_true", help="skip the book scrapes")
-    parser.add_argument("--no-kenpom", action="store_true", help="skip the KenPom ranks")
+    parser.add_argument(
+        "--ratings",
+        choices=RATINGS_CHOICES,
+        default="auto",
+        help="ranks source: auto picks KenPom with a browser, T-Rank without",
+    )
+    parser.add_argument(
+        "--odds-api-key",
+        metavar="KEY",
+        help="read the books from The Odds API instead of scraping their boards",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -92,7 +102,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         days=args.days,
         with_orderbooks=args.orderbooks,
         use_browser=not args.no_browser,
-        with_kenpom=not args.no_kenpom,
+        ratings=args.ratings,
+        odds_api_key=args.odds_api_key,
     )
     print_moneylines(refresh.moneylines, args.limit or None)
     if args.json:

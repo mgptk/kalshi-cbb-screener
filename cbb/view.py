@@ -122,7 +122,7 @@ def _team(row: MoneylineRow, side: str) -> str:
 
 
 def _rank(row: MoneylineRow, side: str) -> Optional[int]:
-    rank = row.kenpom_away if side == "away" else row.kenpom_home
+    rank = row.rating_away if side == "away" else row.rating_home
     return rank.rank if rank else None
 
 
@@ -199,10 +199,11 @@ class Board:
 def build_board(
     section: MoneylineSection,
     books: Sequence[str],
+    rank_label: str = "KP",
     pairing: Pairing = Pairing.FAV_DOG,
     american: bool = False,
     show_books: bool = True,
-    show_kenpom: bool = True,
+    show_ranks: bool = True,
     show_composite: bool = True,
     show_bpi: bool = True,
     show_volume: bool = True,
@@ -221,9 +222,9 @@ def build_board(
         # Insertion order is column order: the ranks sit between the tip-off
         # and the schools, so a row reads "when, how good, who".
         record: dict[str, Any] = {"Tip-off": fmt.kickoff(row.game.kickoff)}
-        if show_kenpom:
-            record[f"KP {a}"] = _rank(row, first)
-            record[f"KP {b}"] = _rank(row, second)
+        if show_ranks:
+            record[f"{rank_label} {a}"] = _rank(row, first)
+            record[f"{rank_label} {b}"] = _rank(row, second)
         record.update({
             a: _team(row, first),
             b: _team(row, second),
@@ -289,7 +290,7 @@ def game_detail(row: MoneylineRow, books: Sequence[str]) -> list[str]:
         if contract.no_bid is not None and contract.no_ask is not None:
             quote += f" | no {contract.no_bid:.2f} bid / {contract.no_ask:.2f} ask"
         lines.append(f"- **{team}** - {quote}")
-        rank = row.kenpom_away if side == "away" else row.kenpom_home
+        rank = row.rating_away if side == "away" else row.rating_home
         if rank:
             lines.append(f"    - {rank.summary}")
 

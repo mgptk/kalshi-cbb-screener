@@ -62,7 +62,7 @@ ALIASES: dict[str, str] = {
     "sam houston": "sam houston state",
     "texas am": "texas aandm",
     "tennessee martin": "ut martin",
-    "university at albany": "albany",
+    "at albany": "albany",  # "University at Albany" loses "university" to _NOISE first
     "liu": "long island",
     "st thomas": "saint thomas",
     "st francis": "saint francis",
@@ -79,6 +79,13 @@ ALIASES: dict[str, str] = {
     # KenPom's own abbreviations, which no other feed here uses.
     "csun": "cal state northridge",
     "cal baptist": "california baptist",
+    # Where Barttorvik keeps a school's older name and Kalshi uses its current
+    # one, or the other way round. Each is one school under two brands.
+    "umkc": "kansas city",
+    "nebraska omaha": "omaha",
+    "illinois chicago": "uic",
+    "loyola md": "loyola maryland",
+    "mcneese state": "mcneese",
 }
 
 

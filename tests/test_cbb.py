@@ -26,8 +26,10 @@ from cbb.sections import (
     _participants,
     _slate_day,
 )
+from cbb.oddsapi import OddsApiClient, parse_events
+from cbb.torvik import TorvikClient, parse_ratings as parse_torvik, season_year
 from cbb.view import Pairing, build_board, favourite_side
-from core.models import BookQuote, KalshiContract, KalshiGame, QuoteStatus
+from core.models import BookQuote, KalshiContract, KalshiGame, Matchup, QuoteStatus
 from core.kalshi import parse_contract
 from core.teams import normalize
 
@@ -93,6 +95,50 @@ KENPOM_HTML = """
 </tbody>
 </table>
 """
+
+
+# Barttorvik rows are positional: rank, school, conference, record, AdjO,
+# AdjO rank, AdjD, ... The real file carries 45 columns; these keep the first
+# seven, which is everything the board reads.
+TORVIK_ROWS = [
+    [1, "Duke", "ACC", "1-0", 120.00576103647623, 3, 90.55719727638669],
+    [160, "UMKC", "Sum", "0-1", 101.5, 180, 104.25],
+    ["x", "broken row", "", "", "", "", ""],
+]
+
+# One game as The Odds API returns it, with the mascots it attaches to every
+# school and a second book that has no moneyline up.
+ODDS_API_EVENTS = [
+    {
+        "id": "abc123",
+        "sport_key": "basketball_ncaab",
+        "commence_time": "2026-11-06T00:00:00Z",
+        "home_team": "Tennessee Volunteers",
+        "away_team": "Wofford Terriers",
+        "bookmakers": [
+            {
+                "key": "draftkings",
+                "title": "DraftKings",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "outcomes": [
+                            {"name": "Wofford Terriers", "price": 900},
+                            {"name": "Tennessee Volunteers", "price": -1500},
+                        ],
+                    }
+                ],
+            },
+            {
+                "key": "betmgm",
+                "title": "BetMGM",
+                "markets": [
+                    {"key": "h2h", "outcomes": [{"name": "Tennessee Volunteers", "price": -1400}]}
+                ],
+            },
+        ],
+    }
+]
 
 
 # --- tests ------------------------------------------------------------------
@@ -369,6 +415,116 @@ def test_board_says_which_kind_of_blank_each_book_cell_is() -> None:
     assert cells["BetMGM Away"] == "off"
     assert cells["Bovada Away"] == "x"  # the only one that means something broke
     assert cells["Pinnacle Away"] == "--"
+
+
+def test_torvik_rows_parse_and_net_rating_is_offence_minus_defence() -> None:
+    teams = parse_torvik(TORVIK_ROWS)
+    assert [t.rank for t in teams] == [1, 160]  # the malformed row is dropped
+    assert teams[0].team == "Duke"
+    assert teams[0].net_rating == 29.45  # 120.006 - 90.557
+    assert teams[1].net_rating == -2.75
+
+
+def test_torvik_ranks_resolve_through_the_alias_table() -> None:
+    client = TorvikClient()
+    client._adopt(parse_torvik(TORVIK_ROWS))
+    # Barttorvik keeps the old brand; Kalshi uses the current one.
+    assert client.rank("Kansas City").rank == 160
+    assert client.rank("Duke").rank == 1
+    assert client.rank("Bethesda") is None
+
+
+def test_torvik_season_turns_over_in_june() -> None:
+    # A season runs Nov-Apr and is filed under the year it ends in.
+    assert season_year(date(2026, 11, 5)) == 2027
+    assert season_year(date(2027, 3, 1)) == 2027
+    assert season_year(date(2027, 6, 1)) == 2028
+
+
+def _odds_client(events: object = None) -> OddsApiClient:
+    client = OddsApiClient(api_key="test")
+    client._index(parse_events(events if events is not None else ODDS_API_EVENTS))
+    client.loaded_ok = True
+    return client
+
+
+def test_odds_api_matches_schools_through_their_mascots() -> None:
+    # No other feed here spells a school "Wofford Terriers".
+    client = _odds_client()
+    matchup = Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
+    quote = client.quote("DraftKings", matchup)
+    assert quote.status is QuoteStatus.OK
+    assert (quote.away_american, quote.home_american) == (900, -1500)
+    assert quote.away_prob is not None and quote.away_prob < 0.1  # devigged
+
+
+def test_odds_api_keeps_each_price_on_its_own_side() -> None:
+    # The sides are matched by school, not by string equality: comparing
+    # "Wofford Terriers" to "Wofford" says they differ, which silently hands
+    # the favourite's price to the underdog.
+    client = _odds_client()
+    straight = client.quote(
+        "DraftKings", Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
+    )
+    assert (straight.away_american, straight.home_american) == (900, -1500)
+    assert straight.away_prob < straight.home_prob
+
+    # And if our feed has the game the other way round, the prices follow.
+    flipped = client.quote(
+        "DraftKings", Matchup(away_team="Tennessee", home_team="Wofford", kickoff=None)
+    )
+    assert (flipped.away_american, flipped.home_american) == (-1500, 900)
+
+
+def test_odds_api_keeps_the_blank_reasons_apart() -> None:
+    client = _odds_client()
+    here = Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
+    # A book with only one side has pulled the moneyline; that is the book's
+    # answer, not a failure.
+    assert client.quote("BetMGM", here).status is QuoteStatus.MONEYLINE_OFF
+    # A game the API does not carry at all.
+    away = Matchup(away_team="Duke", home_team="Kansas", kickoff=None)
+    assert client.quote("DraftKings", away).status is QuoteStatus.NOT_ON_BOARD
+    # And a client that never loaded is a failure, not a missing line.
+    dead = OddsApiClient(api_key="")
+    dead.load()
+    assert dead.quote("DraftKings", here).status is QuoteStatus.UNAVAILABLE
+
+
+def test_odds_api_drops_a_pairing_two_games_would_claim() -> None:
+    # Both Miamis on one slate: "Miami (OH) RedHawks" and "Miami Hurricanes"
+    # both shorten to "miami", so the shortened pairings are ambiguous and
+    # must be thrown away rather than matched to the wrong game.
+    events = [
+        {
+            "home_team": "Miami Hurricanes",
+            "away_team": "Duke Blue Devils",
+            "bookmakers": [
+                {
+                    "key": "draftkings",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": "Duke Blue Devils", "price": -200},
+                                {"name": "Miami Hurricanes", "price": 170},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            "home_team": "Miami (OH) RedHawks",
+            "away_team": "Duke Blue Devils",
+            "bookmakers": [],
+        },
+    ]
+    client = _odds_client(events)
+    # "duke" + "miami" is claimed by both, so neither gets it.
+    assert client.game_for(Matchup(away_team="Duke", home_team="Miami", kickoff=None)) is None
+    # The full spelling is still unambiguous.
+    assert client.game_for(Matchup(away_team="Duke Blue Devils", home_team="Miami Hurricanes", kickoff=None))
 
 
 def main() -> int:

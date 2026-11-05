@@ -24,7 +24,7 @@ from core.scrapers.base import BookScraper
 from core.teams import normalize, pair_key
 
 from .espn import BpiClient, BpiPrediction, EspnClient, EspnGame, index_by_pair
-from .kenpom import KenPomClient, KenPomTeam
+from .ratings import RatingsSource, RatingTeam
 
 log = logging.getLogger(__name__)
 
@@ -92,8 +92,9 @@ class MoneylineRow:
     neutral_site: bool = False
     matched_to_book_slate: bool = False
     bpi: BpiPrediction = field(default_factory=BpiPrediction)
-    kenpom_away: Optional[KenPomTeam] = None
-    kenpom_home: Optional[KenPomTeam] = None
+    rating_away: Optional[RatingTeam] = None
+    rating_home: Optional[RatingTeam] = None
+    """Each school's line in whichever ratings source was used."""
     tipoff_from_espn: bool = False
     """False means the time is Kalshi's occurrence less the usual lead, so it
     is an estimate rather than a published start."""
@@ -152,8 +153,8 @@ class MoneylineRow:
             "edge_away": self.edge_away,
             "edge_home": self.edge_home,
             "bpi": self.bpi.to_dict(),
-            "kenpom_away": self.kenpom_away.to_dict() if self.kenpom_away else None,
-            "kenpom_home": self.kenpom_home.to_dict() if self.kenpom_home else None,
+            "rating_away": self.rating_away.to_dict() if self.rating_away else None,
+            "rating_home": self.rating_home.to_dict() if self.rating_home else None,
             "bpi_edge_away": self.bpi_edge_away,
             "bpi_edge_home": self.bpi_edge_home,
             "moneyline_off_everywhere": self.moneyline_off_everywhere,
@@ -169,8 +170,12 @@ class MoneylineSection:
     last_day: Optional[date] = None
     beyond_window: int = 0
     """Kalshi games further out than the window — listed, just not shown."""
-    kenpom_note: Optional[str] = None
+    rating_note: Optional[str] = None
     """Why the ranks are missing, when they are."""
+    rating_label: str = "KenPom"
+    """Which ratings source the ranks came from, for the page to name."""
+    rating_short_label: str = "KP"
+    """The same, short enough for a column header."""
     generated_at: datetime = field(default_factory=_now)
 
     @property
@@ -192,15 +197,16 @@ class MoneylineSection:
                 "label": self.window_label,
             },
             "book_notes": self.book_notes,
-            "kenpom_note": self.kenpom_note,
+            "rating_note": self.rating_note,
+            "rating_source": self.rating_label,
             "beyond_window": self.beyond_window,
             "counts": {
                 "games": len(self.rows),
                 "matched_to_book_slate": sum(1 for r in self.rows if r.matched_to_book_slate),
                 "with_composite": sum(1 for r in self.rows if r.composite_home is not None),
                 "with_bpi": sum(1 for r in self.rows if r.bpi.available),
-                "with_kenpom": sum(
-                    1 for r in self.rows if r.kenpom_away and r.kenpom_home
+                "with_ratings": sum(
+                    1 for r in self.rows if r.rating_away and r.rating_home
                 ),
                 "moneyline_off_everywhere": sum(
                     1 for r in self.rows if r.moneyline_off_everywhere
@@ -219,7 +225,7 @@ def build_moneylines(
     with_orderbooks: bool = False,
     depth: int = 10,
     bpi: Optional[BpiClient] = None,
-    kenpom: Optional[KenPomClient] = None,
+    ratings: Optional[RatingsSource] = None,
 ) -> MoneylineSection:
     """Every Kalshi basketball game in the window, paired with each book's line."""
     listed = _kalshi_games(kalshi)
@@ -272,7 +278,7 @@ def build_moneylines(
     _attach_espn_tipoffs(rows, by_pair)
     rows.sort(key=lambda r: (r.game.kickoff or datetime.max.replace(tzinfo=timezone.utc)))
     _attach_bpi(rows, by_pair, bpi)
-    _attach_kenpom(rows, kenpom)
+    _attach_ratings(rows, ratings)
 
     if with_orderbooks:
         kalshi.attach_orderbooks(
@@ -287,7 +293,9 @@ def build_moneylines(
         first_day=first,
         last_day=last,
         beyond_window=beyond,
-        kenpom_note=kenpom.note if kenpom is not None else None,
+        rating_note=ratings.note if ratings is not None else None,
+        rating_label=ratings.label if ratings is not None else "none",
+        rating_short_label=ratings.short_label if ratings is not None else "Rk",
     )
 
 
@@ -307,20 +315,20 @@ def _attach_espn_tipoffs(
             row.tipoff_from_espn = True
 
 
-def _attach_kenpom(rows: list[MoneylineRow], kenpom: Optional[KenPomClient]) -> None:
-    """Hang each school's KenPom rank on the row, by name.
+def _attach_ratings(rows: list[MoneylineRow], ratings: Optional[RatingsSource]) -> None:
+    """Hang each school's rank on the row, by name.
 
     Ranks are per team rather than per game, so an unmatched school costs one
     rank and not the pair - the opponent still shows its own.
     """
-    if kenpom is None:
+    if ratings is None:
         return
-    kenpom.load()
+    ratings.load()
     for row in rows:
-        row.kenpom_away = kenpom.rank(row.game.away_team)
-        row.kenpom_home = kenpom.rank(row.game.home_team)
-    matched = sum(1 for r in rows if r.kenpom_away) + sum(1 for r in rows if r.kenpom_home)
-    log.info("kenpom: ranked %d of %d teams on the slate", matched, len(rows) * 2)
+        row.rating_away = ratings.rank(row.game.away_team)
+        row.rating_home = ratings.rank(row.game.home_team)
+    matched = sum(1 for r in rows if r.rating_away) + sum(1 for r in rows if r.rating_home)
+    log.info("%s: ranked %d of %d teams on the slate", ratings.label, matched, len(rows) * 2)
 
 
 def _attach_bpi(

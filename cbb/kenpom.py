@@ -134,6 +134,10 @@ class KenPomClient:
     its rank column, not the refresh.
     """
 
+    label = "KenPom"
+    short_label = "KP"
+    source_url = KENPOM_URL
+
     RENDER_TIMEOUT = 45.0
     WINDOW = (1400, 3000)
 
