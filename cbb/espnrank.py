@@ -1,13 +1,13 @@
-"""ESPN's own BPI ranking, 1 to 365, as a ratings source.
+"""ESPN's own BPI ranking, 1 to 365: the board's rank source.
 
-The third rank source, and the only one a hosted container can actually
-reach. KenPom needs a browser for Cloudflare. Barttorvik answers a laptop
-happily but returns 403 to a datacenter address, which is exactly where a
-deployed copy runs - measured the hard way, on a live Community Cloud app.
-ESPN answers from anywhere, which the board already relies on for the
-schedule and the per-game BPI predictions.
+The only one a hosted container can reach. KenPom needs a browser for
+Cloudflare; Barttorvik answers a laptop but returns 403 to a datacenter
+address, which is where a deployed copy runs - measured on the live Community
+Cloud app. ESPN answers from anywhere, and the board already relies on it for
+the schedule and the per-game BPI predictions. Both of the others were removed
+so the ranks are the same wherever the board runs.
 
-It has one advantage the others cannot have: ESPN gives a team id, and the
+It has one advantage the others could not have: ESPN gives a team id, and the
 board already knows each game's ESPN team ids from the schedule. So the rank
 is matched by id rather than by name, and the whole business of spelling -
 "W Illinois", "Miss Valley St" - never arises. Names are indexed too, as a

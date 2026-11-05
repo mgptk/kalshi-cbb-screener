@@ -4,14 +4,15 @@ Every price cell carries both a devigged percentage and an American equivalent,
 so the toggle is pure client-side JS and never re-fetches. A cell that has no
 price carries neither and renders as a dash.
 
-Times render in the local zone of whatever machine is running this, labelled
-with that zone, rather than in a fixed Eastern.
+Times render in the zone the caller names - the reader's browser zone, on the
+Streamlit page - and fall back to this machine's own zone when none is given.
+A hosted server runs in UTC, so the fallback is only right on a laptop.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -20,10 +21,9 @@ from .devig import prob_to_american
 EASTERN = ZoneInfo("America/New_York")
 """Kept for the slate-day arithmetic, which is Eastern by definition.
 
-Display is a separate question: tip-offs are shown in whatever zone this
-machine is set to, so the board reads in local time wherever it is run. The
-bucketing in `cbb/sections.py` stays Eastern regardless, because that is how
-Kalshi tickers and ESPN's `dates=` parameter file a game.
+Display is a separate question: tip-offs are shown in the reader's zone (see
+`kickoff`). The bucketing in `cbb/sections.py` stays Eastern regardless,
+because that is how Kalshi tickers and ESPN's `dates=` parameter file a game.
 """
 
 # Below/above this, American odds stop being meaningful (a 99.9% shot prices at
@@ -97,21 +97,21 @@ def zone_label(when: datetime) -> str:
     return name
 
 
-def kickoff(when: Optional[datetime]) -> str:
-    """e.g. "Sat Sep 5, 3:30 PM EST", in this machine's own zone.
+def kickoff(when: Optional[datetime], zone: Optional[tzinfo] = None) -> str:
+    """e.g. "Sat Sep 5, 3:30 PM EST", in `zone`, or this machine's own zone.
 
     Built by hand: strftime's no-pad flag is %-d on Linux and %#d on Windows,
     and this has to run on both.
     """
     if when is None:
         return "TBD"
-    local = when.astimezone()
+    local = when.astimezone(zone)
     hour = local.hour % 12 or 12
     meridiem = "AM" if local.hour < 12 else "PM"
-    zone = zone_label(local)
-    return f"{local:%a %b} {local.day}, {hour}:{local:%M} {meridiem} {zone}".rstrip()
+    label = zone_label(local)
+    return f"{local:%a %b} {local.day}, {hour}:{local:%M} {meridiem} {label}".rstrip()
 
 
-def timestamp(when: datetime) -> str:
-    local = when.astimezone()
+def timestamp(when: datetime, zone: Optional[tzinfo] = None) -> str:
+    local = when.astimezone(zone)
     return f"{local:%b %d, %I:%M:%S %p} {zone_label(local)}".rstrip()

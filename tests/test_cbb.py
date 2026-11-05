@@ -12,10 +12,10 @@ from __future__ import annotations
 import sys
 import traceback
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Callable
 
 from cbb.espn import BpiClient, BpiPrediction, _parse_event, _parse_team, _prob
-from cbb.kenpom import KenPomClient, parse_ratings
 from cbb.espn import EspnGame
 from cbb.sections import (
     GAME_SERIES,
@@ -28,11 +28,11 @@ from cbb.sections import (
 )
 from cbb.espnrank import EspnRatings, parse_power_index
 from cbb.oddsapi import OddsApiClient, _candidates, parse_events
-from cbb.ratings import ChainRatings
-from cbb.torvik import TorvikClient, parse_ratings as parse_torvik, season_year
+from cbb.refresh import LoadedBook
 from cbb.view import Pairing, build_board, favourite_side, game_detail
 from core.models import BookQuote, KalshiContract, KalshiGame, Matchup, QuoteStatus
 from core.kalshi import parse_contract
+from core import format as fmt
 from core.teams import normalize
 
 # --- fixtures: real payload slices, captured 2026-11-01 ---------------------
@@ -81,32 +81,6 @@ ESPN_EVENT = {
     ],
 }
 
-
-# Two rows of the ratings table as kenpom.com serves them, header included.
-# The seed span inside a team cell is what a tournament team carries there.
-KENPOM_HTML = """
-<table id="ratings-table">
-<thead><tr class="thead2"><th>Rk</th><th>Team</th><th>Conf</th><th>W-L</th><th>NetRtg</th></tr></thead>
-<tbody>
-<tr><td class="hard_left">1</td><td class="next_left"><a href="team.php?team=Duke">Duke</a>
-    <span class="seed">1</span></td><td class="conf"><a href="conf.php?c=ACC">ACC</a></td>
-    <td class="wl">1-0</td><td>+34.26</td><td class="td-left divide">123.5</td></tr>
-<tr><td class="hard_left">160</td><td class="next_left"><a href="team.php?team=CSUN">CSUN</a></td>
-    <td class="conf"><a href="conf.php?c=BW">BW</a></td><td class="wl">0-0</td><td>-0.91</td>
-    <td class="td-left divide">99.1</td></tr>
-</tbody>
-</table>
-"""
-
-
-# Barttorvik rows are positional: rank, school, conference, record, AdjO,
-# AdjO rank, AdjD, ... The real file carries 45 columns; these keep the first
-# seven, which is everything the board reads.
-TORVIK_ROWS = [
-    [1, "Duke", "ACC", "1-0", 120.00576103647623, 3, 90.55719727638669],
-    [160, "UMKC", "Sum", "0-1", 101.5, 180, 104.25],
-    ["x", "broken row", "", "", "", "", ""],
-]
 
 # One game as The Odds API returns it, with the mascots it attaches to every
 # school and a second book that has no moneyline up.
@@ -291,31 +265,6 @@ def test_basketball_school_aliases_resolve() -> None:
     assert normalize("Illinois") != normalize("Illinois State")
 
 
-def test_kenpom_rows_parse_without_their_seeds() -> None:
-    teams = parse_ratings(KENPOM_HTML)
-    assert [t.rank for t in teams] == [1, 160]
-    # The tournament seed sits inside the team cell; taking the cell's whole
-    # text would name the school "Duke 1".
-    assert teams[0].team == "Duke"
-    assert (teams[0].conference, teams[0].record) == ("ACC", "1-0")
-    assert teams[0].net_rating == 34.26
-    assert teams[1].net_rating == -0.91
-
-
-def test_kenpom_ranks_resolve_through_the_alias_table() -> None:
-    client = KenPomClient()
-    client._adopt(parse_ratings(KENPOM_HTML))
-    # KenPom is the only feed here that writes Northridge as CSUN.
-    assert client.rank("Cal State Northridge").rank == 160
-    assert client.rank("Duke").rank == 1
-    assert client.rank("Bethesda") is None  # NAIA: genuinely unranked
-
-
-def test_kenpom_without_a_table_reports_nothing_rather_than_raising() -> None:
-    # Cloudflare's interstitial is a valid HTML document with no table in it.
-    assert parse_ratings("<html><body>Just a moment...</body></html>") == []
-
-
 def test_kalshi_occurrence_runs_three_hours_past_the_tip_off() -> None:
     # Measured across a full 16-game slate: every Kalshi occurrence sat exactly
     # three hours after ESPN's scheduled start. It marks when the market can
@@ -406,7 +355,7 @@ def test_board_pairs_the_favourite_first_without_touching_away_home() -> None:
     assert fav.frame.iloc[0]["Dog"] == "Wofford"
     # The rank is its own numeric column, never a prefix on the name: as text
     # "100 Duke" sorts before "9 Yale".
-    assert list(fav.frame.columns)[:5] == ["Tip-off", "KP Fav", "KP Dog", "Fav", "Dog"]
+    assert list(fav.frame.columns)[:5] == ["Tip-off", "BPI# Fav", "BPI# Dog", "Fav", "Dog"]
 
     plain = build_board(_section([row]), pairing=Pairing.AWAY_HOME)
     assert plain.frame.iloc[0]["Away"] == "Wofford"
@@ -451,30 +400,6 @@ def test_the_books_stay_out_of_the_table_and_live_in_the_detail() -> None:
     assert "`x`" in detail            # we could not read it: the broken one
     assert "scrape failed" in detail
     assert "`--`" in detail           # not on that book's board
-
-
-def test_torvik_rows_parse_and_net_rating_is_offence_minus_defence() -> None:
-    teams = parse_torvik(TORVIK_ROWS)
-    assert [t.rank for t in teams] == [1, 160]  # the malformed row is dropped
-    assert teams[0].team == "Duke"
-    assert teams[0].net_rating == 29.45  # 120.006 - 90.557
-    assert teams[1].net_rating == -2.75
-
-
-def test_torvik_ranks_resolve_through_the_alias_table() -> None:
-    client = TorvikClient()
-    client._adopt(parse_torvik(TORVIK_ROWS))
-    # Barttorvik keeps the old brand; Kalshi uses the current one.
-    assert client.rank("Kansas City").rank == 160
-    assert client.rank("Duke").rank == 1
-    assert client.rank("Bethesda") is None
-
-
-def test_torvik_season_turns_over_in_june() -> None:
-    # A season runs Nov-Apr and is filed under the year it ends in.
-    assert season_year(date(2026, 11, 5)) == 2027
-    assert season_year(date(2027, 3, 1)) == 2027
-    assert season_year(date(2027, 6, 1)) == 2028
 
 
 def _odds_client(events: object = None) -> OddsApiClient:
@@ -675,42 +600,54 @@ def test_espn_ranks_match_on_team_id_not_spelling() -> None:
     assert source.rank("Duke").rank == 1
 
 
-class _DeadRatings:
-    """A source that cannot load, like T-Rank from a datacenter address."""
+def test_tip_offs_read_in_the_zone_the_reader_is_in() -> None:
+    # A hosted server runs in UTC. Without the reader's zone, a 7 PM Eastern
+    # tip-off reads "Fri Nov 6, 12:00 AM UTC" - the wrong day as well.
+    tip = datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc)
+    assert fmt.kickoff(tip, ZoneInfo("America/New_York")) == "Thu Nov 5, 7:00 PM EST"
+    assert fmt.kickoff(tip, ZoneInfo("America/Los_Angeles")) == "Thu Nov 5, 4:00 PM PST"
+    assert fmt.kickoff(tip, timezone.utc) == "Fri Nov 6, 12:00 AM UTC"
+    assert fmt.kickoff(None, timezone.utc) == "TBD"
+    assert fmt.timestamp(tip, ZoneInfo("America/New_York")) == "Nov 05, 07:00:00 PM EST"
 
-    label = "T-Rank"
-    short_label = "TRk"
+
+def test_the_board_and_the_detail_both_use_the_readers_zone() -> None:
+    row = _board_row(0.08, 0.94, {})  # tips at 00:00 UTC on Nov 4
+    eastern = ZoneInfo("America/New_York")
+    board = build_board(_section([row]), zone=eastern)
+    assert board.frame.iloc[0]["Tip-off"] == "Tue Nov 3, 7:00 PM EST"
+    assert any("Tue Nov 3, 7:00 PM EST" in line for line in game_detail(row, [], eastern))
+
+
+class _CountingBook:
+    """A book that counts its fetches, the way an Odds API credit would."""
+
+    name = "DraftKings"
+    note = None
+    credits_remaining = 480
 
     def __init__(self) -> None:
-        self.note = None
-        self.loaded_ok = False
+        self.loads = 0
 
     def load(self) -> None:
-        self.note = "403 Forbidden"
+        self.loads += 1
 
-    def rank(self, team: str) -> None:
-        return None
-
-
-def test_ratings_chain_falls_through_to_one_that_works() -> None:
-    working = EspnRatings()
-    working._adopt(parse_power_index(POWER_INDEX))
-    working.load = lambda: None  # type: ignore[method-assign]
-
-    chain = ChainRatings(_DeadRatings(), working)
-    chain.load()
-    assert chain.label == "ESPN BPI"        # the header names what was used
-    assert chain.short_label == "BPI#"
-    assert chain.note is None               # the earlier failure is not the reader's problem
-    assert chain.rank("Duke").rank == 1
-    assert chain.rank_by_espn_id("2633").rank == 4
+    def quote(self, matchup: Matchup) -> BookQuote:
+        return BookQuote.unavailable(self.name, "test")
 
 
-def test_ratings_chain_reports_when_nothing_works() -> None:
-    chain = ChainRatings(_DeadRatings(), _DeadRatings())
-    chain.load()
-    assert chain.note == "403 Forbidden"
-    assert chain.rank("Duke") is None
+def test_a_kalshi_only_refresh_reuses_the_books_without_fetching_them() -> None:
+    book = _CountingBook()
+    book.load()  # the one fetch Refresh all paid for
+    kept = LoadedBook(book)
+    kept.load()  # what build_moneylines does on every refresh
+    kept.load()
+    assert book.loads == 1
+    # Everything else is the book's own, so the board cannot tell the
+    # difference - and the credit counter still reads.
+    assert kept.name == "DraftKings"
+    assert kept.credits_remaining == 480
+    assert kept.quote(None).status is QuoteStatus.UNAVAILABLE  # type: ignore[arg-type]
 
 
 def main() -> int:

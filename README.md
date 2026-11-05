@@ -17,8 +17,8 @@ Serves <http://localhost:8501>. Terminal view:
 
 | Column | Meaning |
 | --- | --- |
-| **Tip-off** | ESPN's published start, in your own time zone; `approx` marks the rare game ESPN does not carry |
-| **KP / TRk** | the school's rank, 1–365, from KenPom or Barttorvik's T-Rank — the header says which |
+| **Tip-off** | ESPN's published start, in your browser's time zone; `approx` marks the rare game ESPN does not carry |
+| **BPI#** | the school's rank, 1–365, from ESPN's BPI ranking |
 | **Fav / Dog** | the two schools; the rank is its own column so both sort as they look |
 | **Kalshi ask** | what it costs to buy Yes on that team right now |
 | *(each book)* | not a column — select a row and every book's own price is in the panel below |
@@ -61,7 +61,7 @@ in the **Flags** column.
 
 ## Where each number comes from
 
-Four feeds, and two of them cannot be fetched the easy way. This is the whole
+Four feeds, and one of them cannot be fetched the easy way. This is the whole
 reason the project has the shape it does, so it is worth stating plainly:
 
 | Feed | Plain HTTP | From a datacenter IP | Needs a browser |
@@ -69,8 +69,6 @@ reason the project has the shape it does, so it is worth stating plainly:
 | Kalshi prices | yes | yes | |
 | ESPN schedule, BPI, BPI ranking | yes | yes | |
 | The books, direct | **no** — 403 to any non-browser client | no | yes, or The Odds API |
-| KenPom ranks | **no** — Cloudflare challenge | no | yes |
-| Barttorvik T-Rank | yes | **no** — 403 | |
 
 Those 403s were measured from a residential address, on the same machine whose
 browser scrape succeeds, so the block is on the client's fingerprint rather
@@ -104,25 +102,17 @@ So `cbb/refresh.py` picks a source per feed, in one place:
   slate each one priced. Coverage is uneven — the big five price most
   games and three price a handful — so the **Bks** column says how many
   books each composite is actually averaging.
-- **Ranks.** `--ratings auto` falls through a chain rather than guessing
-  once, because which source works depends on where the board is running and
-  a deployment should not have to be told: **KenPom** where a browser can
-  clear its challenge, then **T-Rank**, then **ESPN's own BPI ranking**. All
-  three rank 1 to 365 and the column header says which you are looking at. A
-  source that fails before one that works is logged, not shown: it is not
-  something the reader can act on.
+- **Ranks.** ESPN's own BPI ranking, everywhere. It carries ESPN team ids,
+  and the board already knows each game's ESPN ids from the schedule, so
+  ranks are matched **by id rather than by name** and spelling never comes
+  into it. Across four days of Kalshi's slate it ranked every school.
 
-  T-Rank sits in the middle of that chain because of a measured surprise —
-  it answers a laptop happily and returns **403 to a datacenter address**,
-  which is exactly where a deployed copy runs. That one was found on the live
-  hosted app, not here.
-
-  ESPN's ranking is last but has an advantage the others cannot have: it
-  carries ESPN team ids, and the board already knows each game's ESPN ids
-  from the schedule, so ranks are matched **by id rather than by name** and
-  the whole question of spelling never arises. It ranked 204 of 204 schools
-  across a 102-game window. On that same window KenPom and T-Rank each
-  matched all 204 by name.
+  KenPom and Barttorvik's T-Rank used to sit ahead of it in a fallback chain
+  and were removed. KenPom is behind a Cloudflare challenge, so it needs a
+  browser; T-Rank answers a laptop but returns **403 to a datacenter
+  address**, which is where a hosted copy runs (found on the live app). A
+  chain meant the board showed different ranks depending on where it ran;
+  one source shows the same ranks everywhere.
 
 ### Running it without a browser
 
@@ -144,10 +134,8 @@ cbb/             everything that knows it is basketball
   books.py       the two books, pointed at their NCAAM boards
   sections.py    the moneyline section
   refresh.py     picks a source per feed for this host
-  kenpom.py      KenPom's ratings table, read in a browser
-  torvik.py      T-Rank's ratings JSON (not from a datacenter IP)
   espnrank.py    ESPN's BPI ranking, matched by team id, works anywhere
-  ratings.py     what the board needs from any of them, and the fallback chain
+  ratings.py     what the board needs from a ranks source
   oddsapi.py     the books over HTTPS, for hosts with no browser
   view.py        section -> one-row-per-game table (no UI import, tested alone)
   streamlit_app.py  the page: layout, caching, the detail panel
@@ -164,7 +152,7 @@ The repository is ready to deploy as it stands: `streamlit_app.py` is at the
 root where Community Cloud looks for it, `requirements.txt` is the install
 list, and `.streamlit/config.toml` carries the theme so a hosted copy looks
 like a local one. The code authenticates against nothing — Kalshi's market
-data, ESPN, KenPom's table and T-Rank are all public — and the one secret
+data and ESPN are both public — and the one secret
 there is, the Odds API key, lives in `.streamlit/secrets.toml`, which is
 git-ignored and never committed. The repository is safe to make public.
 
@@ -187,8 +175,9 @@ git-ignored and never committed. The repository is safe to make public.
    ```toml
    browser_scrapes = false
    odds_api_key = "your-key-here"
-   ratings = "auto"
    ```
+
+   An older `ratings = "auto"` line is ignored now and can be deleted.
 
    The key is yours to get, free, from <https://the-odds-api.com>. Without it
    everything but the book columns still works.
@@ -206,14 +195,14 @@ To change a secret later: **App settings → Secrets**, edit, **Save**.
 ### What a hosted copy does
 
 `browser_scrapes = false` tells it not to attempt the scrapes, and it reads the
-substitutes instead: The Odds API for the books, T-Rank for the ranks. With
-both secrets set, a hosted copy shows the same columns as a local one.
+substitute instead: The Odds API for the books. With both secrets set, a
+hosted copy shows the same columns as a local one.
 
 | | Local, scraping | With an Odds API key | Hosted, no key |
 | --- | --- | --- | --- |
 | Tip-off, teams, Kalshi, volume | yes | yes | yes |
 | ESPN BPI and BPI−K | yes | yes | yes |
-| Ranks | KenPom | either | ESPN BPI |
+| Ranks | ESPN BPI | ESPN BPI | ESPN BPI |
 | Books in the composite | 2 | **8** | none |
 | Composite and Edge | yes | yes | **no** |
 
@@ -226,32 +215,44 @@ in a line at the top rather than leaving you to work it out.
 
 ### Watching the budget
 
-The sidebar shows the Odds API credits left this month beside the Refresh
-button, because that is the button that spends them — one per refresh, 500
-a month on the free tier — and warns under 50. The number is the API's own
+The sidebar shows the Odds API credits left this month beside the refresh
+buttons, because that is where they are spent — one per **Refresh all**, 500
+a month on the free tier — and warns under 50. **Refresh Kalshi** spends
+nothing: it re-reads Kalshi and ESPN against the book prices already fetched,
+and the caption under the title then shows two times, `Kalshi as of` and
+`books as of`, so you can see how old the composite is. The number is the API's own
 `x-requests-remaining` header, not a local count, so it stays right across
 restarts and anything else using the same key.
 
 ### On a phone
 
 The sidebar starts collapsed so the table gets the full width, and the
-**Compact** checkbox drops the book prices and volume for a board that fits a
-phone screen. A hosted app sleeps when nobody is using it; the first visit
+**Compact** checkbox drops BPI and volume for a board that fits a phone
+screen. A hosted app sleeps when nobody is using it; the first visit
 after that wakes it and fetches, which takes a few seconds without the scrapes.
 
 ## Why the fetch is cached the way it is
 
-Streamlit re-runs the whole script on every widget interaction, and a refresh
-here drives a real browser at two sportsbooks and at KenPom — a minute or
-two. So `load()` is wrapped in `st.cache_data` and **only the Refresh button
-causes another fetch**: it bumps a `refresh_token` in session state, which is
-part of the cache key and nothing else. Changing the pairing, the price
-representation or the day window re-reads the cached fetch. Bumping a token
-rather than calling `cache_data.clear()` keeps the other day windows that have
-already been fetched.
+Streamlit re-runs the whole script on every widget interaction, and the books
+cost something to fetch — an Odds API credit, or a minute of browser scraping.
+So the fetch is split in two and **only the buttons cause another one**:
 
-`cbb/kenpom.py` keeps its own day-long cache underneath that, so even a real
-refresh does not pay for a second browser launch for the ranks.
+- `fetch_books()` loads every book once and is wrapped in `st.cache_resource`,
+  keyed by a books counter that only **Refresh all** bumps. The loaded books
+  are reused as they are (`LoadedBook` makes their `load()` a no-op).
+- `load()` fetches Kalshi and ESPN and builds the board against those books.
+  It is wrapped in `st.cache_data`, keyed by both counters, so **Refresh
+  Kalshi** — which bumps only the Kalshi counter — gets fresh markets and
+  spends nothing.
+
+The counters are shared by every session on the server rather than kept per
+session. Opening the page on a phone is a new session; per-session counters
+would start it at zero and show whatever was fetched first, or fetch again and
+spend a credit. Shared, a visit shows the latest fetch anyone made.
+
+Changing the pairing, the price representation or the day window re-reads the
+caches. A new day window rebuilds the board, but from the same books: the odds
+feed returns every game it has priced whatever window is asked for.
 
 ## `core` is a copy, not a link
 
@@ -301,11 +302,12 @@ falls on the next UTC date, and both Kalshi's event ticker (`…26NOV05…`) and
 ESPN's `dates=` parameter file it under the Eastern day. Bucketing by UTC splits
 one evening across two buckets and asks ESPN for the wrong one — on a two-day
 window that cost about 40 games their ESPN match, and so their BPI, without any
-error. That is the grouping only. *Displayed* times are local: the server
-renders each tip-off in the zone of the machine it runs on, labelled with that
-zone (`7:30 PM EST`), and the page then re-renders them in the zone of the
-device showing it, so the board read on a phone two zones away shows that
-phone's time. Without JavaScript the server's zone stands.
+error. That is the grouping only. *Displayed* times are the reader's: the
+page asks the browser for its time zone (`st.context.timezone`) and formats
+every tip-off in it, labelled (`7:30 PM EST`). That matters most on the hosted
+copy, whose server runs in UTC — before this, a 5 PM Eastern game read
+`10:00 PM UTC` on a phone. If the browser does not say, the server's zone is
+used, which is right on a laptop and wrong in the cloud.
 
 ## The window
 
@@ -344,11 +346,11 @@ misses turned up one general bug and a handful of school-name facts:
   Connecticut, UNO, Seattle U, New College, FDU) and are in the shared alias
   table. There is deliberately **no general "drop State" rule**: Illinois and
   Illinois State are different schools, and a blanket rule would merge them.
-- Each ratings source brought its own spellings: KenPom alone writes CSUN and
-  Cal Baptist, and Barttorvik keeps UMKC, Nebraska Omaha, Illinois Chicago,
-  Loyola MD and McNeese St. where Kalshi uses the current brand. All are in the
-  alias table, and with them both sources matched 204 of 204 schools on a
-  102-game window. One alias could never have fired: its key was
+- The rank sources the board used to have brought their own spellings:
+  KenPom wrote CSUN and Cal Baptist, and Barttorvik kept UMKC, Nebraska Omaha,
+  Illinois Chicago, Loyola MD and McNeese St. where Kalshi uses the current
+  brand. Those aliases stay in the table — they are true facts about how
+  schools are written, and cost nothing. One alias could never have fired: its key was
   `university at albany`, but `normalize()` strips "university" as noise before
   the lookup, so the key had to be `at albany`.
 - The Odds API is the odd one out: it attaches mascots ("Saint Louis
@@ -364,8 +366,8 @@ misses turned up one general bug and a handful of school-name facts:
   live slate before it was caught.
 
 With those fixed, all 43 of our games matched an Odds API game and all 86
-schools matched a rating. Checked again across four days of Kalshi's slate —
-179 games, 358 schools — T-Rank ranked every one.
+schools matched a rank. Checked again across four days of Kalshi's slate,
+ESPN's ranking, matched by team id, ranked every school.
 
 The four that still don't match are games ESPN's D-I scoreboard doesn't carry —
 mostly non-D-I exhibition opponents. They render with a "no ESPN match" tag and

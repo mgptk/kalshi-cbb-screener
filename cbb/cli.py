@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from .ratings import RatingTeam
-from .refresh import RATINGS_CHOICES, refresh_all
+from .refresh import refresh_all
 from .sections import DEFAULT_DAYS, MoneylineSection
 
 
@@ -81,10 +81,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--orderbooks", action="store_true", help="fetch order-book depth")
     parser.add_argument("--no-browser", action="store_true", help="skip the book scrapes")
     parser.add_argument(
-        "--ratings",
-        choices=RATINGS_CHOICES,
-        default="auto",
-        help="ranks source: auto falls through KenPom, T-Rank, then ESPN's BPI",
+        "--no-ranks", action="store_true", help="skip ESPN's BPI ranking"
     )
     parser.add_argument(
         "--odds-api-key",
@@ -102,7 +99,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         days=args.days,
         with_orderbooks=args.orderbooks,
         use_browser=not args.no_browser,
-        ratings=args.ratings,
+        with_ranks=not args.no_ranks,
         odds_api_key=args.odds_api_key,
     )
     print_moneylines(refresh.moneylines, args.limit or None)

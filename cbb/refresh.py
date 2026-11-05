@@ -1,19 +1,15 @@
 """One refresh: the college-basketball moneyline board, fetched live.
 
-Where the numbers come from depends on what the machine can do, and this is
-the one place that decides it. Two of the four feeds are plain HTTP and work
-anywhere - Kalshi's prices, ESPN's schedule and BPI. The other two are not:
+Three of the four feeds are plain HTTP and work anywhere - Kalshi's prices,
+ESPN's schedule and BPI, and ESPN's BPI ranking. The books are the exception:
+DraftKings and BetMGM render their boards client-side and refuse plain
+clients, so reading them directly needs a browser. Given an Odds API key
+instead, the books arrive over ordinary HTTPS and no browser is involved.
 
-* **The books.** DraftKings and BetMGM render their boards client-side and
-  refuse plain clients outright, so reading them needs a browser. Given an
-  Odds API key instead, the same two books' prices arrive over ordinary HTTPS
-  and no browser is involved.
-* **The ranks.** KenPom needs a browser for the same reason (Cloudflare);
-  Barttorvik's T-Rank is a plain JSON file. `ratings="auto"` picks whichever
-  the host can actually reach.
-
-So a laptop runs browser scrapes and KenPom; a hosted container runs the Odds
-API and T-Rank; both produce the same board.
+The books are also the one feed that costs something - an Odds API credit per
+fetch - so they can be loaded on their own (`load_books`) and handed back to
+`refresh_all` as already loaded. That is what lets the page refresh Kalshi
+and ESPN without spending a credit.
 """
 
 from __future__ import annotations
@@ -24,20 +20,16 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 from core.kalshi import KalshiClient
+from core.models import BookQuote, Matchup
 from core.scrapers.base import BookScraper
 
 from .books import default_books
 from .espn import BpiClient, EspnClient
 from .espnrank import EspnRatings
-from .kenpom import KenPomClient
 from .oddsapi import odds_api_books
-from .ratings import ChainRatings, RatingsSource
 from .sections import DEFAULT_DAYS, MoneylineSection, build_moneylines
-from .torvik import TorvikClient
 
 log = logging.getLogger(__name__)
-
-RATINGS_CHOICES = ("auto", "kenpom", "torvik", "espn", "none")
 
 
 @dataclass
@@ -48,38 +40,19 @@ class Refresh:
     """Odds API credits left this month, when that is where the books came
     from. The free tier is 500 and a refresh spends one, so it is worth
     seeing before it runs out rather than after."""
+    books_fetched_at: Optional[datetime] = None
+    """When the book prices were fetched, which is earlier than
+    `generated_at` after a Kalshi-only refresh reused them."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "generated_at": self.generated_at.isoformat(),
+            "books_fetched_at": (
+                self.books_fetched_at.isoformat() if self.books_fetched_at else None
+            ),
             "odds_credits_remaining": self.odds_credits,
             "moneylines": self.moneylines.to_dict(),
         }
-
-
-def choose_ratings(which: str, use_browser: bool) -> Optional[RatingsSource]:
-    """The ratings source to use, given what this host can reach.
-
-    "auto" falls through a chain rather than guessing once, because what works
-    depends on where this is running and a deployment should not have to be
-    told. KenPom first where a browser can clear its challenge; then T-Rank,
-    which answers a laptop but returns 403 to a datacenter address; then
-    ESPN's own BPI ranking, which answers anywhere and is the one a hosted
-    copy ends up on.
-    """
-    if which == "none":
-        return None
-    if which == "kenpom":
-        return KenPomClient(use_browser=use_browser)
-    if which == "torvik":
-        return TorvikClient()
-    if which == "espn":
-        return EspnRatings()
-    if which != "auto":
-        raise ValueError(f"unknown ratings source {which!r}; pick one of {RATINGS_CHOICES}")
-    if use_browser:
-        return ChainRatings(KenPomClient(use_browser=True), TorvikClient(), EspnRatings())
-    return ChainRatings(TorvikClient(), EspnRatings())
 
 
 def choose_books(
@@ -96,6 +69,42 @@ def choose_books(
     return list(default_books(use_browser, headless))
 
 
+class LoadedBook:
+    """A book that has already fetched, standing in for itself on a later refresh.
+
+    `load()` is a no-op, so building the board again re-reads the prices it
+    already has instead of fetching (and, from The Odds API, paying) again.
+    Everything else - `name`, `note`, `quote`, `credits_remaining` - is the
+    wrapped book's own.
+    """
+
+    def __init__(self, book: BookScraper) -> None:
+        self._book = book
+
+    def __getattr__(self, attr: str) -> Any:
+        if attr == "_book":  # not set yet, as during unpickling: no recursion
+            raise AttributeError(attr)
+        return getattr(self._book, attr)
+
+    def load(self) -> None:
+        return None
+
+    def quote(self, matchup: Matchup) -> BookQuote:
+        return self._book.quote(matchup)
+
+
+def load_books(
+    odds_api_key: Optional[str] = None,
+    use_browser: bool = True,
+    headless: bool = True,
+) -> list[LoadedBook]:
+    """Fetch every book once, for `refresh_all(books=...)` to reuse."""
+    books = choose_books(None, odds_api_key, use_browser, headless)
+    for book in books:
+        book.load()
+    return [LoadedBook(b) for b in books]
+
+
 def refresh_all(
     books: Optional[Sequence[BookScraper]] = None,
     days: int = DEFAULT_DAYS,
@@ -104,13 +113,19 @@ def refresh_all(
     use_browser: bool = True,
     headless: bool = True,
     with_bpi: bool = True,
-    ratings: str = "auto",
+    with_ranks: bool = True,
     odds_api_key: Optional[str] = None,
+    books_fetched_at: Optional[datetime] = None,
 ) -> Refresh:
+    """Fetch and build the board.
+
+    `books` already loaded (from `load_books`) are reused as they are; pass
+    `books_fetched_at` with them so the page can say how old their prices are.
+    """
     espn = EspnClient()
     kalshi = KalshiClient()
     bpi = BpiClient() if with_bpi else None
-    rating_source = choose_ratings(ratings, use_browser)
+    rating_source = EspnRatings() if with_ranks else None
     try:
         scrapers = choose_books(books, odds_api_key, use_browser, headless)
         log.info(
@@ -136,7 +151,11 @@ def refresh_all(
             ),
             None,
         )
-        return Refresh(moneylines=moneylines, odds_credits=credits)
+        return Refresh(
+            moneylines=moneylines,
+            odds_credits=credits,
+            books_fetched_at=books_fetched_at if books is not None else None,
+        )
     finally:
         kalshi.close()
         espn.close()

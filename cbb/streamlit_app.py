@@ -3,20 +3,28 @@
     .venv/Scripts/streamlit run streamlit_app.py
 
 Streamlit re-runs this whole file on every widget interaction, which matters
-more here than in most apps: a refresh drives a real browser at two sportsbooks
-and at KenPom and takes a minute or two. So the fetch sits behind
-`st.cache_data` and nothing but the Refresh button can cause another one -
-changing the pairing, the price representation or the day window re-reads the
-cached fetch instead. `refresh_token` in session state is what Refresh bumps;
-clearing the cache outright would also throw away the other day windows.
+more here than in most apps: the books cost an Odds API credit per fetch (or a
+minute of browser scraping), so nothing but a button can cause another one.
+
+There are two fetches, cached separately:
+
+* `fetch_books` - the sportsbooks, the expensive part. Keyed by `books_token`,
+  which only **Refresh all** bumps (see `_tokens`). It is `st.cache_resource`
+  because the loaded book objects are reused as they are, not copied.
+* `load` - Kalshi, ESPN and the board built from them. Keyed by both tokens, so
+  **Refresh Kalshi** (which bumps only `kalshi_token`) re-reads the markets
+  against the books already in hand and spends nothing.
+
+Changing the pairing, the price representation or the day window re-reads
+those caches. A new day window does rebuild the board, but from the same books.
 
 Layout only lives here. The table itself is built by `cbb/view.py`, which has
 no Streamlit import and is tested on its own.
 
 A hosted copy (Streamlit Community Cloud) has no browser to drive, so the
-sportsbook boards and KenPom cannot be read there. Setting `browser_scrapes`
+sportsbook boards cannot be scraped there. Setting `browser_scrapes`
 to false in that app's secrets makes it fetch only what a plain HTTP client can
-reach - Kalshi's prices and ESPN's schedule and BPI - and say in one line which
+reach - Kalshi's prices and ESPN's schedule, BPI and ranks - and say in one line which
 columns are therefore missing, rather than three scrapers each reporting their
 own failure. The README has the deployment steps.
 """
@@ -24,14 +32,15 @@ own failure. The README has the deployment steps.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
 
 from core import format as fmt
 
-from cbb.refresh import Refresh, refresh_all
+from cbb.refresh import LoadedBook, Refresh, load_books, refresh_all
 from cbb.sections import DEFAULT_DAYS
 from cbb.view import Board, Pairing, TICKER, build_board, game_detail
 
@@ -61,7 +70,7 @@ def _secret(name: str, default: Any = None) -> Any:
 
 
 def browser_scrapes() -> bool:
-    """Whether this host can drive a browser, and so scrape boards and KenPom.
+    """Whether this host can drive a browser, and so scrape the books' boards.
 
     True everywhere a person runs it; a deployment that cannot says so in its
     secrets.
@@ -69,9 +78,22 @@ def browser_scrapes() -> bool:
     return bool(_secret("browser_scrapes", True))
 
 
-def ratings_choice() -> str:
-    """Which ratings to use: see `cbb.refresh.choose_ratings`."""
-    return str(_secret("ratings", "auto") or "auto")
+def viewer_zone() -> Optional[tzinfo]:
+    """The reader's own time zone, as their browser reports it.
+
+    Tip-offs are formatted on the server, and a hosted server runs in UTC - so
+    without this a phone in New York reads "10:00 PM UTC" for a 5 PM game.
+    None (the server's own zone) only when the browser has not said, which is
+    also the right answer on a laptop.
+    """
+    name = getattr(st.context, "timezone", None)
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        log.info("unknown browser time zone %r; using the server's", name)
+        return None
 
 
 def odds_api_key() -> str:
@@ -84,28 +106,58 @@ def odds_api_key() -> str:
     return str(_secret("odds_api_key", "") or "")
 
 
+@st.cache_resource(show_spinner=False, max_entries=2)
+def fetch_books(
+    browser: bool, api_key: str, books_token: int
+) -> tuple[list[LoadedBook], datetime]:
+    """Every book's prices, fetched once per **Refresh all**.
+
+    `books_token` is not used in the body - it is in the signature so that
+    pressing Refresh all is a different cache key and nothing else is.
+    """
+    books = load_books(odds_api_key=api_key or None, use_browser=browser)
+    return books, datetime.now(timezone.utc)
+
+
 @st.cache_data(show_spinner=False, max_entries=8)
 def load(
     days: int,
     orderbooks: bool,
     browser: bool,
     api_key: str,
-    ratings: str,
-    refresh_token: int,
+    books_token: int,
+    kalshi_token: int,
 ) -> Refresh:
-    """One fetch, cached.
+    """Kalshi and ESPN, fetched fresh, against the books already in hand.
 
-    `refresh_token` is not used in the body - it is in the signature so that
-    pressing Refresh is a different cache key and nothing else is. The key is
-    in the signature for the same reason: adding one should re-fetch.
+    Both tokens are in the signature only to be part of the key: either button
+    makes this a new fetch, and only Refresh all makes `fetch_books` one too.
     """
+    books, fetched_at = fetch_books(browser, api_key, books_token)
     return refresh_all(
+        books=books,
+        books_fetched_at=fetched_at,
         days=days,
         with_orderbooks=orderbooks,
         use_browser=browser,
-        ratings=ratings,
         odds_api_key=api_key or None,
     )
+
+
+@st.cache_resource
+def _tokens() -> dict[str, int]:
+    """The refresh counters, shared by every session on this server.
+
+    Per-session counters would start each new visit at zero - and opening the
+    page on a phone is a new visit - so it would show whatever was fetched
+    first, or fetch again and spend a credit. Shared, a visit shows the latest
+    fetch anyone made.
+    """
+    return {"books": 0, "kalshi": 0}
+
+
+def _bump(token: str) -> None:
+    _tokens()[token] += 1
 
 
 def sidebar() -> dict[str, Any]:
@@ -122,8 +174,31 @@ def sidebar() -> dict[str, Any]:
             value=False,
             help="Slower: pulls full Kalshi depth for every contract.",
         )
-        if st.button("Refresh", type="primary", use_container_width=True):
-            st.session_state.refresh_token = st.session_state.get("refresh_token", 0) + 1
+        paid = bool(odds_api_key())
+        if st.button(
+            "Refresh all",
+            type="primary",
+            width="stretch",
+            help=(
+                "Kalshi, ESPN and the sportsbooks. Spends one Odds API credit."
+                if paid
+                else "Kalshi, ESPN and the sportsbooks."
+            ),
+        ):
+            _bump("books")
+            _bump("kalshi")
+        if st.button(
+            "Refresh Kalshi",
+            width="stretch",
+            help=(
+                "Kalshi prices and ESPN only, against the book prices already "
+                "fetched. Free - no Odds API credit."
+                if paid
+                else "Kalshi prices and ESPN only, against the book prices "
+                "already fetched. Skips the slow browser scrape."
+            ),
+        ):
+            _bump("kalshi")
 
         st.divider()
         st.subheader("Columns")
@@ -205,13 +280,21 @@ def credit_counter(data: Refresh) -> None:
             )
 
 
-def header(data: Refresh) -> None:
-    age = (datetime.now(timezone.utc) - data.generated_at).total_seconds()
-    stamp = fmt.timestamp(data.generated_at)
+def _as_of(label: str, when: datetime, zone: Optional[tzinfo]) -> str:
+    age = (datetime.now(timezone.utc) - when).total_seconds()
+    stamp = fmt.timestamp(when, zone)
     if age > STALE_AFTER_SECONDS:
-        st.caption(f"as of {stamp} · :orange[{int(age // 60)} min old]")
-    else:
-        st.caption(f"as of {stamp}")
+        return f"{label} {stamp} · :orange[{int(age // 60)} min old]"
+    return f"{label} {stamp}"
+
+
+def header(data: Refresh, zone: Optional[tzinfo], has_books: bool) -> None:
+    parts = [_as_of("Kalshi as of", data.generated_at, zone)]
+    # After a Kalshi-only refresh the two differ, and the Edge columns are only
+    # as fresh as the older of them - so the books get their own stamp.
+    if has_books and data.books_fetched_at is not None:
+        parts.append(_as_of("books as of", data.books_fetched_at, zone))
+    st.caption(" · ".join(parts))
 
 
 def notes(section: Any, browser: bool, books_from_api: bool) -> None:
@@ -284,7 +367,7 @@ def column_config(board: Board, rank_label: str, rank_source: str) -> dict[str, 
     config: dict[str, Any] = {
         TICKER: None,  # carried for the detail panel, not shown
         "Tip-off": st.column_config.TextColumn(
-            "Tip-off", help="ESPN's published start, in this machine's time zone"
+            "Tip-off", help="ESPN's published start, in your browser's time zone"
         ),
         "Flags": st.column_config.TextColumn(
             "Flags", help="Anything about this game worth knowing before trading it"
@@ -313,7 +396,9 @@ def column_config(board: Board, rank_label: str, rank_source: str) -> dict[str, 
     return config
 
 
-def detail(section: Any, selection: Any, board: Board) -> None:
+def detail(
+    section: Any, selection: Any, board: Board, zone: Optional[tzinfo]
+) -> None:
     rows = getattr(selection, "selection", {}).get("rows", []) if selection else []
     if not rows:
         st.caption(
@@ -326,7 +411,7 @@ def detail(section: Any, selection: Any, board: Board) -> None:
     if row is None:
         return
     with st.container(border=True):
-        for line in game_detail(row, books_in(section)):
+        for line in game_detail(row, books_in(section), zone):
             st.markdown(line)
 
 
@@ -359,23 +444,30 @@ def main() -> None:
     options = sidebar()
     browser = browser_scrapes()
     api_key = odds_api_key()
-    ratings = ratings_choice()
-    token = st.session_state.get("refresh_token", 0)
+    zone = viewer_zone()
+    books_token = _tokens()["books"]
+    kalshi_token = _tokens()["kalshi"]
     # Name what is actually being fetched: a browser scrape takes a minute or
     # two, and everything else takes seconds.
-    slow = (browser and not api_key) or (browser and ratings in ("auto", "kenpom"))
+    slow = browser and not api_key
     waiting = (
-        "Fetching Kalshi, ESPN, the odds feed and the ratings."
+        "Fetching Kalshi, ESPN and the odds feed."
         if not slow
-        else "Fetching Kalshi and ESPN, and driving a browser for the rest. "
+        else "Fetching Kalshi and ESPN, and driving a browser for the books. "
         "This takes a minute or two."
     )
     with st.spinner(waiting):
         data = load(
-            options["days"], options["orderbooks"], browser, api_key, ratings, token
+            options["days"],
+            options["orderbooks"],
+            browser,
+            api_key,
+            books_token,
+            kalshi_token,
         )
 
-    header(data)
+    has_books = browser or bool(api_key)
+    header(data, zone, has_books)
     notes(data.moneylines, browser, bool(api_key))
 
     credit_counter(data)
@@ -385,7 +477,7 @@ def main() -> None:
         american=options["american"],
         show_ranks=True,
         rank_label=data.moneylines.rating_short_label,
-        show_composite=browser or bool(api_key),
+        show_composite=has_books,
         show_bpi=options["show_bpi"],
         show_volume=options["show_volume"],
         show_depth=any(
@@ -393,6 +485,7 @@ def main() -> None:
             for row in data.moneylines.rows
             for c in (row.game.away, row.game.home)
         ),
+        zone=zone,
     )
     selection = st.dataframe(
         style(board),
@@ -402,25 +495,21 @@ def main() -> None:
             data.moneylines.rating_label,
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         on_select="rerun",
         selection_mode="single-row",
     )
-    detail(data.moneylines, selection, board)
+    detail(data.moneylines, selection, board, zone)
 
     all_books = books_in(data.moneylines)
     book_source = (
         f"The Odds API ({len(all_books)} books)" if api_key
         else ("scraped boards" if browser else "none")
     )
-    ranks = data.moneylines.rating_label
     parts = [
         "Prices: Kalshi",
         f"Books: {book_source}",
-        # When the ranks are ESPN's too, saying "ESPN BPI" twice reads like a
-        # mistake rather than like one source doing two jobs.
-        "Ranks and model: ESPN BPI" if ranks == "ESPN BPI"
-        else f"Ranks: {ranks} · Model: ESPN BPI",
+        "Ranks and model: ESPN BPI",
     ]
     st.caption(" · ".join(parts))
 

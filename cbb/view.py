@@ -18,6 +18,7 @@ is how the edges are usually read.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import tzinfo
 from enum import Enum
 from typing import Any, Optional, Sequence
 
@@ -100,7 +101,7 @@ def _price(value: Optional[float], american: bool) -> Any:
 def _team(row: MoneylineRow, side: str) -> str:
     """Just the school.
 
-    The KenPom rank used to be prefixed here, which read well but sorted as
+    The rank used to be prefixed here, which read well but sorted as
     text: "100 Duke" came before "9 Yale". The rank has its own numeric column
     beside this one instead, so both sort the way they look.
     """
@@ -193,7 +194,7 @@ class Board:
 
 def build_board(
     section: MoneylineSection,
-    rank_label: str = "KP",
+    rank_label: str = "BPI#",
     pairing: Pairing = Pairing.FAV_DOG,
     american: bool = False,
     show_ranks: bool = True,
@@ -201,6 +202,7 @@ def build_board(
     show_bpi: bool = True,
     show_volume: bool = True,
     show_depth: bool = False,
+    zone: Optional[tzinfo] = None,
 ) -> Board:
     """One row per game, two columns per measure.
 
@@ -220,7 +222,7 @@ def build_board(
         first, second = _sides(row, pairing)
         # Insertion order is column order: the ranks sit between the tip-off
         # and the schools, so a row reads "when, how good, who".
-        record: dict[str, Any] = {"Tip-off": fmt.kickoff(row.game.kickoff)}
+        record: dict[str, Any] = {"Tip-off": fmt.kickoff(row.game.kickoff, zone)}
         if show_ranks:
             record[f"{rank_label} {a}"] = _rank(row, first)
             record[f"{rank_label} {b}"] = _rank(row, second)
@@ -261,7 +263,9 @@ def build_board(
     return Board(frame=frame, edge_columns=edges, percent_columns=percents)
 
 
-def game_detail(row: MoneylineRow, books: Sequence[str]) -> list[str]:
+def game_detail(
+    row: MoneylineRow, books: Sequence[str], zone: Optional[tzinfo] = None
+) -> list[str]:
     """The lines behind one game, which used to live in hover titles.
 
     `st.dataframe` can only caption a whole column, so everything that was a
@@ -269,7 +273,7 @@ def game_detail(row: MoneylineRow, books: Sequence[str]) -> list[str]:
     the rating line - is written out for the game the reader picks instead.
     """
     lines = [f"**{row.game.away_team} @ {row.game.home_team}** - `{row.game.event_ticker}`"]
-    when = fmt.kickoff(row.game.kickoff)
+    when = fmt.kickoff(row.game.kickoff, zone)
     source = "ESPN's published start" if row.tipoff_from_espn else (
         "estimated from Kalshi's settle time; ESPN does not carry this game"
     )

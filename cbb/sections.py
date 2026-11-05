@@ -172,9 +172,9 @@ class MoneylineSection:
     """Kalshi games further out than the window — listed, just not shown."""
     rating_note: Optional[str] = None
     """Why the ranks are missing, when they are."""
-    rating_label: str = "KenPom"
+    rating_label: str = "ESPN BPI"
     """Which ratings source the ranks came from, for the page to name."""
-    rating_short_label: str = "KP"
+    rating_short_label: str = "BPI#"
     """The same, short enough for a column header."""
     generated_at: datetime = field(default_factory=_now)
 
