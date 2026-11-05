@@ -90,6 +90,14 @@ So `cbb/refresh.py` picks a source per feed, in one place:
   `build_quote` already devigs, so the composite and Edge are unchanged —
   the composite is simply averaged over more books.
 
+  **The feed only lists games a book has actually priced.** Asked for a
+  four-day window explicitly, it returned the same 44 games as the default
+  call, all of them today's — so a widened day window shows tomorrow's
+  games with ranks, BPI and Kalshi prices but empty book columns until the
+  books post their lines, usually the evening before. That is the same
+  behaviour the scraped boards had, and the note under the table already
+  says it.
+
   Which books exist is only known once the request has been made, so the
   columns are discovered rather than configured, ordered by how much of the
   slate each one priced. Coverage is uneven — the big five price most
@@ -309,7 +317,8 @@ misses turned up one general bug and a handful of school-name facts:
   live slate before it was caught.
 
 With those fixed, all 43 of our games matched an Odds API game and all 86
-schools matched a rating.
+schools matched a rating. Checked again across four days of Kalshi's slate —
+179 games, 358 schools — T-Rank ranked every one.
 
 The four that still don't match are games ESPN's D-I scoreboard doesn't carry —
 mostly non-D-I exhibition opponents. They render with a "no ESPN match" tag and
