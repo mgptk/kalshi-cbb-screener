@@ -1,0 +1,15 @@
+httpx[http2]>=0.27
+python-dateutil>=2.9
+
+# scraping the books' own boards
+beautifulsoup4>=4.12
+# optional: without it, the books fall back to non-browser sources
+selenium>=4.20
+
+# the dashboard
+streamlit>=1.40
+pandas>=2.2
+
+# Windows ships no system tz database, so zoneinfo needs this to resolve
+# America/New_York, which is what the slate day is bucketed by.
+tzdata>=2024.1

@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+out/
+.env
+
+# local Streamlit secrets; the committed file is secrets.toml.example
+.streamlit/secrets.toml

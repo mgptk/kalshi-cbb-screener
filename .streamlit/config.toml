@@ -1,0 +1,16 @@
+# Checked in on purpose: Community Cloud reads this, so the hosted copy and a
+# local run look the same. Secrets never live here - see .streamlit/secrets.toml,
+# which is git-ignored.
+
+[theme]
+base = "dark"
+primaryColor = "#f0883e"          # the orange the HTML board used
+backgroundColor = "#0f1115"
+secondaryBackgroundColor = "#161a21"
+textColor = "#e6e9ef"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
