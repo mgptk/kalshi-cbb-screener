@@ -256,14 +256,20 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     st.title("NCAAM Sharp Line")
-    st.markdown(
-        "**Edge** is the book composite minus the Kalshi ask, per team - "
-        ":green[positive] means Kalshi is priced below the books, so that side is the "
-        "cheap one to buy. **BPI−K** does the same against ESPN's model. Blank book "
-        "cells say which kind of blank they are: `off` (no moneyline posted), `--` (not "
-        "on that board), `x` (we could not read the book - the only one that means "
-        "something is broken)."
-    )
+    # Folded away: on a phone this paragraph is the whole first screen, and it
+    # is reference rather than something you reread every visit.
+    with st.expander("What the columns mean"):
+        st.markdown(
+            "**Edge** is the book composite minus the Kalshi ask, per team - "
+            ":green[positive] means Kalshi is priced below the books, so that side is "
+            "the cheap one to buy. **BPI−K** does the same against ESPN's model.\n\n"
+            "Blank book cells say which kind of blank they are: `off` (no moneyline "
+            "posted), `--` (not on that board), `x` (we could not read the book - the "
+            "only one that means something is broken).\n\n"
+            "Each measure appears twice, once per side, so sorting a column sorts on "
+            "the side you mean. Select a row for its quotes, each book's reason for a "
+            "blank, and its KenPom lines."
+        )
 
     options = sidebar()
     browser = browser_scrapes()
