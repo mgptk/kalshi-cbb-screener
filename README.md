@@ -146,23 +146,45 @@ tests/
 The repository is ready to deploy as it stands: `streamlit_app.py` is at the
 root where Community Cloud looks for it, `requirements.txt` is the install
 list, and `.streamlit/config.toml` carries the theme so a hosted copy looks
-like a local one. Nothing here authenticates against anything — Kalshi's
-market data, ESPN and KenPom's ratings table are all public — so there are
-no secrets to leak into a public repository.
+like a local one. The code authenticates against nothing — Kalshi's market
+data, ESPN, KenPom's table and T-Rank are all public — and the one secret
+there is, the Odds API key, lives in `.streamlit/secrets.toml`, which is
+git-ignored and never committed. The repository is safe to make public.
 
-1. Push this directory to GitHub.
-2. <https://share.streamlit.io> → **Create app** → point it at the repo and
-   branch, main file path `streamlit_app.py`, Python 3.11 or newer.
-3. **App settings → Secrets**, paste the one line from
-   `.streamlit/secrets.toml.example`:
+1. **Push this directory to GitHub**, public or private — both work, and a
+   private one needs you to have admin on the repository, because Streamlit
+   asks for the `repo` OAuth scope and installs a read-only deploy key.
+2. **<https://share.streamlit.io>** → *Continue to sign-in* (GitHub, Google
+   or an emailed code). Signing in with GitHub only passes your email;
+   reading the repository is a second authorisation.
+3. **Create app** (upper right) → *Yup, I have an app*.
+4. Fill in **repository**, **branch**, and **file path** `streamlit_app.py`
+   — or paste the GitHub URL of that file. Optionally set a subdomain under
+   **App URL** (6–63 characters); otherwise you get a generated
+   `*.streamlit.app` address.
+5. **Advanced settings** → set the **Python version** (3.12 is the default
+   and is fine; the project needs 3.11 or newer) and paste the **Secrets** as
+   TOML. Secrets can be set here *before* the first deploy, which saves a
+   failed first run:
 
    ```toml
    browser_scrapes = false
    odds_api_key = "your-key-here"
+   ratings = "auto"
    ```
 
    The key is yours to get, free, from <https://the-odds-api.com>. Without it
    everything but the book columns still works.
+6. **Save**, then **Deploy**.
+
+`requirements.txt` at the root is installed automatically. Keep it as the
+only dependency file: Community Cloud takes the first of `uv.lock`, `Pipfile`,
+`environment.yml`, `requirements.txt`, `pyproject.toml` that it finds, and
+having two is how you end up debugging the wrong one. The runner is Debian,
+so `packages.txt` would take apt packages — this project needs none, since
+nothing it does on a hosted copy wants a browser.
+
+To change a secret later: **App settings → Secrets**, edit, **Save**.
 
 ### What a hosted copy does
 
@@ -184,6 +206,14 @@ instead of a minute, and with no browser at all.
 
 Without a key the board still runs; it just has no book columns, and says so
 in a line at the top rather than leaving you to work it out.
+
+### Watching the budget
+
+The sidebar shows the Odds API credits left this month beside the Refresh
+button, because that is the button that spends them — one per refresh, 500
+a month on the free tier — and warns under 50. The number is the API's own
+`x-requests-remaining` header, not a local count, so it stays right across
+restarts and anything else using the same key.
 
 ### On a phone
 

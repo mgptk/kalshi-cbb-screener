@@ -43,10 +43,15 @@ RATINGS_CHOICES = ("auto", "kenpom", "torvik", "none")
 class Refresh:
     moneylines: MoneylineSection
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    odds_credits: Optional[int] = None
+    """Odds API credits left this month, when that is where the books came
+    from. The free tier is 500 and a refresh spends one, so it is worth
+    seeing before it runs out rather than after."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "generated_at": self.generated_at.isoformat(),
+            "odds_credits_remaining": self.odds_credits,
             "moneylines": self.moneylines.to_dict(),
         }
 
@@ -116,7 +121,15 @@ def refresh_all(
             bpi=bpi,
             ratings=rating_source,
         )
-        return Refresh(moneylines=moneylines)
+        credits = next(
+            (
+                left
+                for left in (getattr(b, "credits_remaining", None) for b in scrapers)
+                if left is not None
+            ),
+            None,
+        )
+        return Refresh(moneylines=moneylines, odds_credits=credits)
     finally:
         kalshi.close()
         espn.close()

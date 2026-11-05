@@ -41,6 +41,10 @@ FALLBACK_BOOKS = ("DraftKings", "BetMGM")
 """Only for a refresh that produced no books at all."""
 DAY_CHOICES = (1, 2, 3, 5, 7)
 STALE_AFTER_SECONDS = 90
+FREE_TIER_CREDITS = 500
+"""The Odds API's monthly free allowance, for the counter to count against."""
+LOW_CREDITS = 50
+"""Below this the counter says so plainly rather than just getting smaller."""
 
 # Mid-tone rather than the old board's pastels: Streamlit's theme can be light
 # or dark and these have to stay legible on both.
@@ -171,6 +175,36 @@ def books_in(section: Any) -> list[str]:
     one priced.
     """
     return list(section.book_notes) or list(FALLBACK_BOOKS)
+
+
+def credit_counter(data: Refresh) -> None:
+    """The Odds API budget, beside the button that spends it.
+
+    The free tier is 500 credits a month and one refresh costs one, so the
+    number belongs next to Refresh rather than in a footer: that is where
+    the decision to spend one is made.
+    """
+    if data.odds_credits is None:
+        return
+    with st.sidebar:
+        st.divider()
+        st.metric(
+            "Odds API credits",
+            f"{data.odds_credits:,}",
+            delta=f"{FREE_TIER_CREDITS - data.odds_credits:,} used of {FREE_TIER_CREDITS}",
+            delta_color="off",
+            help=(
+                "Left this month on the free tier's "
+                f"{FREE_TIER_CREDITS}. One refresh spends one, whichever "
+                "books come back."
+            ),
+        )
+        if data.odds_credits <= LOW_CREDITS:
+            st.warning(
+                f"{data.odds_credits} left - the board loses its book "
+                "columns when they run out.",
+                icon="⚠️",
+            )
 
 
 def header(data: Refresh) -> None:
@@ -345,6 +379,7 @@ def main() -> None:
     header(data)
     notes(data.moneylines, browser, bool(api_key))
 
+    credit_counter(data)
     books = books_in(data.moneylines)
     shown = options["show_books"] and (browser or bool(api_key))
     if shown and len(books) > 1:
@@ -387,11 +422,14 @@ def main() -> None:
 
     all_books = books_in(data.moneylines)
     book_source = (
-        f"The Odds API ({len(all_books)})" if api_key
+        f"The Odds API ({len(all_books)} books)" if api_key
         else ("scraped boards" if browser else "none")
     )
-    st.caption(
-        f"Prices: Kalshi · Books: {book_source} · "
-        f"Ranks: {data.moneylines.rating_label} · Model: ESPN BPI"
-    )
+    parts = [
+        "Prices: Kalshi",
+        f"Books: {book_source}",
+        f"Ranks: {data.moneylines.rating_label}",
+        "Model: ESPN BPI",
+    ]
+    st.caption(" · ".join(parts))
 

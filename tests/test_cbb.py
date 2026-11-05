@@ -540,6 +540,20 @@ def test_odds_api_candidates_go_back_through_the_alias_table() -> None:
     assert normalize("Loyola Chicago") in _candidates("Loyola (Chi) Ramblers")
 
 
+def test_odds_api_credits_reach_the_book_that_reports_them() -> None:
+    # The counter in the sidebar reads this off whichever book came from the
+    # API, so the client's header value has to survive the trip.
+    from cbb.oddsapi import OddsApiBook
+
+    client = _odds_client()
+    client.credits_remaining = 487
+    book = OddsApiBook("draftkings", "DraftKings", client)
+    assert book.credits_remaining == 487
+    # A scraped book has no such attribute, which is how refresh_all tells
+    # "no API in play" from "no credits left".
+    assert getattr(object(), "credits_remaining", None) is None
+
+
 def test_odds_api_takes_every_book_the_region_carries() -> None:
     # One credit buys the whole region, so the composite should be over all
     # of them, ordered by how much of the slate each one priced.

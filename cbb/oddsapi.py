@@ -308,6 +308,11 @@ class OddsApiBook:
     def note(self) -> Optional[str]:
         return self._client.note
 
+    @property
+    def credits_remaining(self) -> Optional[int]:
+        """What the API's own x-requests-remaining header last said."""
+        return self._client.credits_remaining
+
     def load(self) -> None:
         self._client.load()
 
