@@ -84,7 +84,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--ratings",
         choices=RATINGS_CHOICES,
         default="auto",
-        help="ranks source: auto picks KenPom with a browser, T-Rank without",
+        help="ranks source: auto falls through KenPom, T-Rank, then ESPN's BPI",
     )
     parser.add_argument(
         "--odds-api-key",

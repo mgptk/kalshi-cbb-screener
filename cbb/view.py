@@ -97,20 +97,6 @@ def _price(value: Optional[float], american: bool) -> Any:
     return cell.american
 
 
-def _book_cell(quote: Any, side: str, american: bool) -> Any:
-    """A book's price, or the mark saying which kind of blank it is."""
-    if quote is None:
-        return STATUS_MARK[QuoteStatus.UNAVAILABLE]
-    if quote.status is not QuoteStatus.OK:
-        return STATUS_MARK.get(quote.status, "--")
-    prob = quote.away_prob if side == "away" else quote.home_prob
-    if not american:
-        value = _pct(prob)
-        return "--" if value is None else f"{value:.1f}"
-    odds = quote.away_american if side == "away" else quote.home_american
-    return fmt.american_cell(odds, prob).american or "--"
-
-
 def _team(row: MoneylineRow, side: str) -> str:
     """Just the school.
 
@@ -207,11 +193,9 @@ class Board:
 
 def build_board(
     section: MoneylineSection,
-    books: Sequence[str],
     rank_label: str = "KP",
     pairing: Pairing = Pairing.FAV_DOG,
     american: bool = False,
-    show_books: bool = True,
     show_ranks: bool = True,
     show_composite: bool = True,
     show_bpi: bool = True,
@@ -223,6 +207,12 @@ def build_board(
     Edge and BPI−K are differences in percentage points, so they stay numeric
     whatever the price representation is - which keeps the sorts that matter
     numeric even when the prices are showing as American odds.
+
+    The individual books are deliberately not columns. Eight of them is
+    sixteen columns of numbers nobody reads across, and what the board is
+    actually for is the composite and the gap to Kalshi. `Bks` says how many
+    books that composite had; `game_detail` has each book's own price for the
+    one game a reader picks.
     """
     a, b = _labels(pairing)
     rows: list[dict[str, Any]] = []
@@ -240,11 +230,6 @@ def build_board(
             f"Kalshi {a}": _kalshi(row, first, american),
             f"Kalshi {b}": _kalshi(row, second, american),
         })
-        if show_books:
-            for book in books:
-                quote = row.books.get(book)
-                record[f"{book} {a}"] = _book_cell(quote, first, american)
-                record[f"{book} {b}"] = _book_cell(quote, second, american)
         if show_composite:
             # Both come from the books, so a host that cannot read the books
             # drops them rather than printing two columns of dashes.

@@ -21,7 +21,7 @@ Serves <http://localhost:8501>. Terminal view:
 | **KP / TRk** | the school's rank, 1–365, from KenPom or Barttorvik's T-Rank — the header says which |
 | **Fav / Dog** | the two schools; the rank is its own column so both sort as they look |
 | **Kalshi ask** | what it costs to buy Yes on that team right now |
-| **Book columns** | each book's own posted American price, vig included — two when scraping, eight from The Odds API |
+| *(each book)* | not a column — select a row and every book's own price is in the panel below |
 | **Composite** | devigged, equal-weighted across every book carrying the game |
 | **Bks** | how many books went into that composite — one book and eight are very different numbers |
 | **Edge** | **book composite − Kalshi ask**, per team; positive (green) means Kalshi is priced below the books, so that side is the cheap one to buy |
@@ -64,12 +64,13 @@ in the **Flags** column.
 Four feeds, and two of them cannot be fetched the easy way. This is the whole
 reason the project has the shape it does, so it is worth stating plainly:
 
-| Feed | Plain HTTP | Needs a browser |
-| --- | --- | --- |
-| Kalshi prices | yes | |
-| ESPN schedule and BPI | yes | |
-| The books, direct | **no** — 403 to any non-browser client | yes, or The Odds API |
-| KenPom ranks | **no** — Cloudflare challenge | yes, or T-Rank instead |
+| Feed | Plain HTTP | From a datacenter IP | Needs a browser |
+| --- | --- | --- | --- |
+| Kalshi prices | yes | yes | |
+| ESPN schedule, BPI, BPI ranking | yes | yes | |
+| The books, direct | **no** — 403 to any non-browser client | no | yes, or The Odds API |
+| KenPom ranks | **no** — Cloudflare challenge | no | yes |
+| Barttorvik T-Rank | yes | **no** — 403 | |
 
 Those 403s were measured from a residential address, on the same machine whose
 browser scrape succeeds, so the block is on the client's fingerprint rather
@@ -103,10 +104,25 @@ So `cbb/refresh.py` picks a source per feed, in one place:
   slate each one priced. Coverage is uneven — the big five price most
   games and three price a handful — so the **Bks** column says how many
   books each composite is actually averaging.
-- **Ranks.** `--ratings auto` takes KenPom where a browser can clear its
-  challenge and Barttorvik's T-Rank everywhere else. Both are tempo-free
-  ratings of the same kind; the numbers differ and the column header says
-  which you are looking at. On a 102-game slate each matched all 204 schools.
+- **Ranks.** `--ratings auto` falls through a chain rather than guessing
+  once, because which source works depends on where the board is running and
+  a deployment should not have to be told: **KenPom** where a browser can
+  clear its challenge, then **T-Rank**, then **ESPN's own BPI ranking**. All
+  three rank 1 to 365 and the column header says which you are looking at. A
+  source that fails before one that works is logged, not shown: it is not
+  something the reader can act on.
+
+  T-Rank sits in the middle of that chain because of a measured surprise —
+  it answers a laptop happily and returns **403 to a datacenter address**,
+  which is exactly where a deployed copy runs. That one was found on the live
+  hosted app, not here.
+
+  ESPN's ranking is last but has an advantage the others cannot have: it
+  carries ESPN team ids, and the board already knows each game's ESPN ids
+  from the schedule, so ranks are matched **by id rather than by name** and
+  the whole question of spelling never arises. It ranked 204 of 204 schools
+  across a 102-game window. On that same window KenPom and T-Rank each
+  matched all 204 by name.
 
 ### Running it without a browser
 
@@ -129,8 +145,9 @@ cbb/             everything that knows it is basketball
   sections.py    the moneyline section
   refresh.py     picks a source per feed for this host
   kenpom.py      KenPom's ratings table, read in a browser
-  torvik.py      T-Rank's ratings JSON, read over plain HTTP
-  ratings.py     what the board needs from either of them
+  torvik.py      T-Rank's ratings JSON (not from a datacenter IP)
+  espnrank.py    ESPN's BPI ranking, matched by team id, works anywhere
+  ratings.py     what the board needs from any of them, and the fallback chain
   oddsapi.py     the books over HTTPS, for hosts with no browser
   view.py        section -> one-row-per-game table (no UI import, tested alone)
   streamlit_app.py  the page: layout, caching, the detail panel
@@ -196,7 +213,7 @@ both secrets set, a hosted copy shows the same columns as a local one.
 | --- | --- | --- | --- |
 | Tip-off, teams, Kalshi, volume | yes | yes | yes |
 | ESPN BPI and BPI−K | yes | yes | yes |
-| Ranks | KenPom | either | T-Rank |
+| Ranks | KenPom | either | ESPN BPI |
 | Books in the composite | 2 | **8** | none |
 | Composite and Edge | yes | yes | **no** |
 

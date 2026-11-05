@@ -278,7 +278,7 @@ def build_moneylines(
     _attach_espn_tipoffs(rows, by_pair)
     rows.sort(key=lambda r: (r.game.kickoff or datetime.max.replace(tzinfo=timezone.utc)))
     _attach_bpi(rows, by_pair, bpi)
-    _attach_ratings(rows, ratings)
+    _attach_ratings(rows, ratings, by_pair)
 
     if with_orderbooks:
         kalshi.attach_orderbooks(
@@ -315,20 +315,43 @@ def _attach_espn_tipoffs(
             row.tipoff_from_espn = True
 
 
-def _attach_ratings(rows: list[MoneylineRow], ratings: Optional[RatingsSource]) -> None:
-    """Hang each school's rank on the row, by name.
+def _attach_ratings(
+    rows: list[MoneylineRow],
+    ratings: Optional[RatingsSource],
+    by_pair: dict[frozenset[str], EspnGame],
+) -> None:
+    """Hang each school's rank on the row.
 
+    By ESPN's team id where the source knows one - which is exact, and skips
+    the whole question of how a feed spells a school - and by name otherwise.
     Ranks are per team rather than per game, so an unmatched school costs one
-    rank and not the pair - the opponent still shows its own.
+    rank and not the pair; the opponent still shows its own.
     """
     if ratings is None:
         return
     ratings.load()
     for row in rows:
-        row.rating_away = ratings.rank(row.game.away_team)
-        row.rating_home = ratings.rank(row.game.home_team)
+        espn_game = by_pair.get(pair_key(row.game.away_team, row.game.home_team))
+        away_id = home_id = None
+        if espn_game is not None:
+            away_id, home_id = espn_game.away_team_id, espn_game.home_team_id
+            if normalize(espn_game.away_team) != normalize(row.game.away_team):
+                away_id, home_id = home_id, away_id
+        row.rating_away = _rating_for(ratings, row.game.away_team, away_id)
+        row.rating_home = _rating_for(ratings, row.game.home_team, home_id)
     matched = sum(1 for r in rows if r.rating_away) + sum(1 for r in rows if r.rating_home)
     log.info("%s: ranked %d of %d teams on the slate", ratings.label, matched, len(rows) * 2)
+
+
+def _rating_for(
+    ratings: RatingsSource, team: str, espn_id: Optional[str]
+) -> Optional[RatingTeam]:
+    by_id = getattr(ratings, "rank_by_espn_id", None)
+    if by_id is not None:
+        hit = by_id(espn_id)
+        if hit is not None:
+            return hit
+    return ratings.rank(team)
 
 
 def _attach_bpi(

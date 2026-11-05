@@ -28,15 +28,16 @@ from core.scrapers.base import BookScraper
 
 from .books import default_books
 from .espn import BpiClient, EspnClient
+from .espnrank import EspnRatings
 from .kenpom import KenPomClient
 from .oddsapi import odds_api_books
-from .ratings import RatingsSource
+from .ratings import ChainRatings, RatingsSource
 from .sections import DEFAULT_DAYS, MoneylineSection, build_moneylines
 from .torvik import TorvikClient
 
 log = logging.getLogger(__name__)
 
-RATINGS_CHOICES = ("auto", "kenpom", "torvik", "none")
+RATINGS_CHOICES = ("auto", "kenpom", "torvik", "espn", "none")
 
 
 @dataclass
@@ -59,10 +60,12 @@ class Refresh:
 def choose_ratings(which: str, use_browser: bool) -> Optional[RatingsSource]:
     """The ratings source to use, given what this host can reach.
 
-    "auto" is the useful one: KenPom where a browser can clear its challenge,
-    T-Rank everywhere else. They measure the same thing and matched every
-    school on a 102-game slate, so the board reads the same either way; only
-    the numbers differ, and the column says which it is showing.
+    "auto" falls through a chain rather than guessing once, because what works
+    depends on where this is running and a deployment should not have to be
+    told. KenPom first where a browser can clear its challenge; then T-Rank,
+    which answers a laptop but returns 403 to a datacenter address; then
+    ESPN's own BPI ranking, which answers anywhere and is the one a hosted
+    copy ends up on.
     """
     if which == "none":
         return None
@@ -70,9 +73,13 @@ def choose_ratings(which: str, use_browser: bool) -> Optional[RatingsSource]:
         return KenPomClient(use_browser=use_browser)
     if which == "torvik":
         return TorvikClient()
+    if which == "espn":
+        return EspnRatings()
     if which != "auto":
         raise ValueError(f"unknown ratings source {which!r}; pick one of {RATINGS_CHOICES}")
-    return KenPomClient(use_browser=True) if use_browser else TorvikClient()
+    if use_browser:
+        return ChainRatings(KenPomClient(use_browser=True), TorvikClient(), EspnRatings())
+    return ChainRatings(TorvikClient(), EspnRatings())
 
 
 def choose_books(

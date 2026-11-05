@@ -148,20 +148,18 @@ def sidebar() -> dict[str, Any]:
         compact = st.checkbox(
             "Compact",
             value=False,
-            help="Drops the book prices and the volume - the phone-sized board.",
+            help="Drops BPI and volume - the phone-sized board.",
         )
-        show_books = st.checkbox("Book prices", value=True, disabled=compact)
         show_bpi = st.checkbox("BPI", value=True, disabled=compact)
         show_volume = st.checkbox("Volume", value=True, disabled=compact)
     if compact:
-        show_books = False
+        show_bpi = False
         show_volume = False
     return {
         "days": days,
         "orderbooks": orderbooks,
         "pairing": pairing,
         "american": american,
-        "show_books": show_books,
         "show_bpi": show_bpi,
         "show_volume": show_volume,
     }
@@ -319,8 +317,8 @@ def detail(section: Any, selection: Any, board: Board) -> None:
     rows = getattr(selection, "selection", {}).get("rows", []) if selection else []
     if not rows:
         st.caption(
-            "Select a row for its two-sided quotes, each book's reason for a blank, "
-            "and its rating lines."
+            "Select a row for every book's own price on that game, the two Kalshi "
+            "quotes and the rating lines."
         )
         return
     ticker = board.frame.iloc[rows[0]][TICKER]
@@ -349,12 +347,13 @@ def main() -> None:
             "**Edge** is the book composite minus the Kalshi ask, per team - "
             ":green[positive] means Kalshi is priced below the books, so that side is "
             "the cheap one to buy. **BPI−K** does the same against ESPN's model.\n\n"
-            "Blank book cells say which kind of blank they are: `off` (no moneyline "
-            "posted), `--` (not on that board), `x` (we could not read the book - the "
-            "only one that means something is broken).\n\n"
+            "**Bks** is how many books went into that composite - one book and eight "
+            "are very different numbers.\n\n"
             "Each measure appears twice, once per side, so sorting a column sorts on "
-            "the side you mean. Select a row for its quotes, each book's reason for a "
-            "blank, and its KenPom lines."
+            "the side you mean. **Select a row** for the individual books' prices, "
+            "each one's reason for a blank (`off` = no moneyline posted, `--` = not "
+            "on that board, `x` = we could not read it), both Kalshi quotes and the "
+            "rating lines."
         )
 
     options = sidebar()
@@ -380,21 +379,10 @@ def main() -> None:
     notes(data.moneylines, browser, bool(api_key))
 
     credit_counter(data)
-    books = books_in(data.moneylines)
-    shown = options["show_books"] and (browser or bool(api_key))
-    if shown and len(books) > 1:
-        # Eight books is sixteen columns; most of the time a reader wants a
-        # few. The composite is over all of them either way - this only
-        # chooses what is on screen.
-        with st.sidebar:
-            books = st.multiselect("Books shown", books, default=books)
-
     board = build_board(
         data.moneylines,
-        books=books,
         pairing=options["pairing"],
         american=options["american"],
-        show_books=shown,
         show_ranks=True,
         rank_label=data.moneylines.rating_short_label,
         show_composite=browser or bool(api_key),
@@ -425,11 +413,14 @@ def main() -> None:
         f"The Odds API ({len(all_books)} books)" if api_key
         else ("scraped boards" if browser else "none")
     )
+    ranks = data.moneylines.rating_label
     parts = [
         "Prices: Kalshi",
         f"Books: {book_source}",
-        f"Ranks: {data.moneylines.rating_label}",
-        "Model: ESPN BPI",
+        # When the ranks are ESPN's too, saying "ESPN BPI" twice reads like a
+        # mistake rather than like one source doing two jobs.
+        "Ranks and model: ESPN BPI" if ranks == "ESPN BPI"
+        else f"Ranks: {ranks} · Model: ESPN BPI",
     ]
     st.caption(" · ".join(parts))
 

@@ -26,9 +26,11 @@ from cbb.sections import (
     _participants,
     _slate_day,
 )
+from cbb.espnrank import EspnRatings, parse_power_index
 from cbb.oddsapi import OddsApiClient, _candidates, parse_events
+from cbb.ratings import ChainRatings
 from cbb.torvik import TorvikClient, parse_ratings as parse_torvik, season_year
-from cbb.view import Pairing, build_board, favourite_side
+from cbb.view import Pairing, build_board, favourite_side, game_detail
 from core.models import BookQuote, KalshiContract, KalshiGame, Matchup, QuoteStatus
 from core.kalshi import parse_contract
 from core.teams import normalize
@@ -139,6 +141,39 @@ ODDS_API_EVENTS = [
         ],
     }
 ]
+
+
+# ESPN's power index, cut down. The column names live ONCE at the top of the
+# document; each team carries only values, in that order.
+POWER_INDEX = {
+    "categories": [
+        {
+            "name": "bpi",
+            "names": ["bpi", "bpirank", "bpisevendaychangerank", "bpioffense",
+                      "bpidefense", "chancewinconfortie", "sosremrank", "wins", "losses"],
+        }
+    ],
+    "teams": [
+        {
+            "team": {"id": "150", "displayName": "Duke Blue Devils",
+                     "shortDisplayName": "Duke"},
+            "categories": [
+                {"name": "bpi",
+                 "values": [22.7509, 1.0, None, 11.12, 11.63, 86.43, 28.0, 1.0, 0.0]},
+                {"name": "resume", "values": []},
+            ],
+        },
+        {
+            "team": {"id": "2633", "displayName": "Tennessee Volunteers",
+                     "shortDisplayName": "Tennessee"},
+            "categories": [
+                {"name": "bpi",
+                 "values": [19.124, 4.0, None, 9.0, 10.1, 50.0, 30.0, 0.0, 1.0]},
+            ],
+        },
+        {"team": {"id": "1", "shortDisplayName": "No Rank"}, "categories": []},
+    ],
+}
 
 
 # --- tests ------------------------------------------------------------------
@@ -365,7 +400,7 @@ def test_board_pairs_the_favourite_first_without_touching_away_home() -> None:
     row = _board_row(0.08, 0.94, {})
     assert favourite_side(row) == "home"
 
-    fav = build_board(_section([row]), books=[], pairing=Pairing.FAV_DOG, show_books=False)
+    fav = build_board(_section([row]), pairing=Pairing.FAV_DOG)
     assert len(fav.frame) == 1  # one row per game, not three
     assert fav.frame.iloc[0]["Fav"] == "Tennessee"
     assert fav.frame.iloc[0]["Dog"] == "Wofford"
@@ -373,9 +408,7 @@ def test_board_pairs_the_favourite_first_without_touching_away_home() -> None:
     # "100 Duke" sorts before "9 Yale".
     assert list(fav.frame.columns)[:5] == ["Tip-off", "KP Fav", "KP Dog", "Fav", "Dog"]
 
-    plain = build_board(
-        _section([row]), books=[], pairing=Pairing.AWAY_HOME, show_books=False
-    )
+    plain = build_board(_section([row]), pairing=Pairing.AWAY_HOME)
     assert plain.frame.iloc[0]["Away"] == "Wofford"
     assert plain.frame.iloc[0]["Home"] == "Tennessee"
 
@@ -384,9 +417,7 @@ def test_board_keeps_the_edges_numeric_when_prices_turn_american() -> None:
     # Edge is a difference in percentage points, so American odds do not apply
     # to it - which is what keeps the sort that matters numeric in both modes.
     row = _board_row(0.08, 0.94, {})
-    board = build_board(
-        _section([row]), books=[], pairing=Pairing.FAV_DOG, american=True, show_books=False
-    )
+    board = build_board(_section([row]), pairing=Pairing.FAV_DOG, american=True)
     cells = board.frame.iloc[0]
     assert isinstance(cells["Edge Fav"], float)
     assert cells["Edge Fav"] == 1.0  # composite 95.0 - ask 94.0
@@ -395,7 +426,7 @@ def test_board_keeps_the_edges_numeric_when_prices_turn_american() -> None:
     assert "Kalshi Fav" not in board.percent_columns
 
 
-def test_board_says_which_kind_of_blank_each_book_cell_is() -> None:
+def test_the_books_stay_out_of_the_table_and_live_in_the_detail() -> None:
     books = {
         "DraftKings": BookQuote(
             book="DraftKings", status=QuoteStatus.OK, away_american=900,
@@ -405,16 +436,21 @@ def test_board_says_which_kind_of_blank_each_book_cell_is() -> None:
         "Bovada": BookQuote.unavailable("Bovada", note="scrape failed"),
         "Pinnacle": BookQuote(book="Pinnacle", status=QuoteStatus.NOT_ON_BOARD),
     }
-    board = build_board(
-        _section([_board_row(0.08, 0.94, books)]),
-        books=list(books),
-        pairing=Pairing.AWAY_HOME,
-    )
-    cells = board.frame.iloc[0]
-    assert cells["DraftKings Away"] == "10.0"
-    assert cells["BetMGM Away"] == "off"
-    assert cells["Bovada Away"] == "x"  # the only one that means something broke
-    assert cells["Pinnacle Away"] == "--"
+    row = _board_row(0.08, 0.94, books)
+    board = build_board(_section([row]), pairing=Pairing.AWAY_HOME)
+
+    # Eight books would be sixteen columns nobody reads across. The table
+    # carries the composite and how many books it had; the books themselves
+    # are in the panel for the one game a reader picks.
+    assert not [c for c in board.frame.columns if c.startswith(tuple(books))]
+    assert board.frame.iloc[0]["Bks"] == 1  # only DraftKings priced it
+
+    detail = "\n".join(game_detail(row, list(books)))
+    assert "+900" in detail and "-1500" in detail
+    assert "`off`" in detail          # the book posts no moneyline
+    assert "`x`" in detail            # we could not read it: the broken one
+    assert "scrape failed" in detail
+    assert "`--`" in detail           # not on that book's board
 
 
 def test_torvik_rows_parse_and_net_rating_is_offence_minus_defence() -> None:
@@ -615,6 +651,66 @@ def test_odds_api_takes_every_book_the_region_carries() -> None:
     assert client.book_keys() == ["fanduel", "bovada"]
     assert client.titles["bovada"] == "Bovada"
     assert client.coverage == {"fanduel": 2, "bovada": 1}
+
+
+def test_espn_power_index_reads_its_column_names_from_the_document() -> None:
+    # Each team's category carries values but no names - reading the names
+    # off the team returns nothing at all, which is how this first shipped.
+    teams = parse_power_index(POWER_INDEX)
+    assert [t.rank for t in teams] == [1, 4]  # the team with no bpi drops out
+    assert teams[0].team == "Duke"
+    assert teams[0].net_rating == 22.75
+    assert teams[0].record == "1-0"
+    assert teams[1].record == "0-1"
+
+
+def test_espn_ranks_match_on_team_id_not_spelling() -> None:
+    source = EspnRatings()
+    source._adopt(parse_power_index(POWER_INDEX))
+    # The id is exact, which is the point: no alias can be wrong.
+    assert source.rank_by_espn_id("2633").rank == 4
+    assert source.rank_by_espn_id("9999") is None
+    assert source.rank_by_espn_id(None) is None
+    # Names still work for a game ESPN did not match.
+    assert source.rank("Duke").rank == 1
+
+
+class _DeadRatings:
+    """A source that cannot load, like T-Rank from a datacenter address."""
+
+    label = "T-Rank"
+    short_label = "TRk"
+
+    def __init__(self) -> None:
+        self.note = None
+        self.loaded_ok = False
+
+    def load(self) -> None:
+        self.note = "403 Forbidden"
+
+    def rank(self, team: str) -> None:
+        return None
+
+
+def test_ratings_chain_falls_through_to_one_that_works() -> None:
+    working = EspnRatings()
+    working._adopt(parse_power_index(POWER_INDEX))
+    working.load = lambda: None  # type: ignore[method-assign]
+
+    chain = ChainRatings(_DeadRatings(), working)
+    chain.load()
+    assert chain.label == "ESPN BPI"        # the header names what was used
+    assert chain.short_label == "BPI#"
+    assert chain.note is None               # the earlier failure is not the reader's problem
+    assert chain.rank("Duke").rank == 1
+    assert chain.rank_by_espn_id("2633").rank == 4
+
+
+def test_ratings_chain_reports_when_nothing_works() -> None:
+    chain = ChainRatings(_DeadRatings(), _DeadRatings())
+    chain.load()
+    assert chain.note == "403 Forbidden"
+    assert chain.rank("Duke") is None
 
 
 def main() -> int:
