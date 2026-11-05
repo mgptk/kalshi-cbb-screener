@@ -271,7 +271,7 @@ def game_detail(row: MoneylineRow, books: Sequence[str]) -> list[str]:
 
     `st.dataframe` can only caption a whole column, so everything that was a
     `title=` attribute - the two-sided quotes, each blank book cell's reason,
-    the KenPom line - is written out for the game the reader picks instead.
+    the rating line - is written out for the game the reader picks instead.
     """
     lines = [f"**{row.game.away_team} @ {row.game.home_team}** - `{row.game.event_ticker}`"]
     when = fmt.kickoff(row.game.kickoff)

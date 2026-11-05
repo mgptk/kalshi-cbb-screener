@@ -258,7 +258,7 @@ def detail(section: Any, selection: Any, board: Board) -> None:
     if not rows:
         st.caption(
             "Select a row for its two-sided quotes, each book's reason for a blank, "
-            "and its KenPom lines."
+            "and its rating lines."
         )
         return
     ticker = board.frame.iloc[rows[0]][TICKER]
