@@ -171,6 +171,15 @@ def _kalshi(row: MoneylineRow, side: str, american: bool) -> Any:
     return _price(contract.yes_ask if contract else None, american)
 
 
+def _priced_books(row: MoneylineRow) -> int:
+    """How many books the composite is averaging for this game.
+
+    With eight books of uneven coverage the basis moves game to game, and a
+    composite over one book is a very different number from one over six.
+    """
+    return sum(1 for q in row.books.values() if q.status is QuoteStatus.OK)
+
+
 def _volume(row: MoneylineRow) -> Optional[float]:
     volumes = [c.volume for c in (row.game.away, row.game.home) if c]
     return sum(volumes) if volumes else None
@@ -241,6 +250,7 @@ def build_board(
             # drops them rather than printing two columns of dashes.
             record[f"Comp {a}"] = _composite(row, first, american)
             record[f"Comp {b}"] = _composite(row, second, american)
+            record["Bks"] = _priced_books(row)
             record[f"Edge {a}"] = _edge(row, first)
             record[f"Edge {b}"] = _edge(row, second)
         if show_bpi:

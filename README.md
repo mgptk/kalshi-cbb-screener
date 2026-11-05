@@ -21,8 +21,9 @@ Serves <http://localhost:8501>. Terminal view:
 | **KP / TRk** | the school's rank, 1–365, from KenPom or Barttorvik's T-Rank — the header says which |
 | **Fav / Dog** | the two schools; the rank is its own column so both sort as they look |
 | **Kalshi ask** | what it costs to buy Yes on that team right now |
-| **DraftKings / BetMGM** | each book's own posted American price, vig included |
-| **Composite** | devigged, equal-weighted across the books carrying the game |
+| **Book columns** | each book's own posted American price, vig included — two when scraping, eight from The Odds API |
+| **Composite** | devigged, equal-weighted across every book carrying the game |
+| **Bks** | how many books went into that composite — one book and eight are very different numbers |
 | **Edge** | **book composite − Kalshi ask**, per team; positive (green) means Kalshi is priced below the books, so that side is the cheap one to buy |
 | **BPI** | ESPN's matchup-predictor win probability |
 | **BPI−K** | BPI − Kalshi ask, the same comparison against the model |
@@ -67,7 +68,7 @@ reason the project has the shape it does, so it is worth stating plainly:
 | --- | --- | --- |
 | Kalshi prices | yes | |
 | ESPN schedule and BPI | yes | |
-| DraftKings, BetMGM | **no** — 403 to any non-browser client | yes, or The Odds API |
+| The books, direct | **no** — 403 to any non-browser client | yes, or The Odds API |
 | KenPom ranks | **no** — Cloudflare challenge | yes, or T-Rank instead |
 
 Those 403s were measured from a residential address, on the same machine whose
@@ -79,11 +80,21 @@ arrive by XHR after the page boots.
 
 So `cbb/refresh.py` picks a source per feed, in one place:
 
-- **Books.** No key: scrape both boards in a real browser. With an Odds API
-  key: the same two books' moneylines over plain HTTPS, one credit per refresh
-  (`markets=h2h` x `regions=us`), which the free tier's 500 a month covers
-  about sixteen times a day. The prices arrive as American odds, which is what
-  `build_quote` already devigs, so the composite and Edge are unchanged.
+- **Books.** No key: scrape DraftKings' and BetMGM's boards in a real
+  browser. With an Odds API key: **every book the US region carries**, which
+  on a measured slate was eight — DraftKings, BetMGM, FanDuel, Bovada,
+  BetRivers, BetOnline.ag, BetUS, LowVig.ag. One request covers all of them
+  for one credit (`markets=h2h` x `regions=us`), so the free tier's 500 a
+  month is about sixteen refreshes a day; filtering to two books would have
+  cost exactly the same. The prices arrive as American odds, which is what
+  `build_quote` already devigs, so the composite and Edge are unchanged —
+  the composite is simply averaged over more books.
+
+  Which books exist is only known once the request has been made, so the
+  columns are discovered rather than configured, ordered by how much of the
+  slate each one priced. Coverage is uneven — the big five price most
+  games and three price a handful — so the **Bks** column says how many
+  books each composite is actually averaging.
 - **Ranks.** `--ratings auto` takes KenPom where a browser can clear its
   challenge and Barttorvik's T-Rank everywhere else. Both are tempo-free
   ratings of the same kind; the numbers differ and the column header says
@@ -151,12 +162,17 @@ no secrets to leak into a public repository.
 substitutes instead: The Odds API for the books, T-Rank for the ranks. With
 both secrets set, a hosted copy shows the same columns as a local one.
 
-| | Local | Hosted, with an Odds API key | Hosted, without |
+| | Local, scraping | With an Odds API key | Hosted, no key |
 | --- | --- | --- | --- |
 | Tip-off, teams, Kalshi, volume | yes | yes | yes |
 | ESPN BPI and BPI−K | yes | yes | yes |
-| Ranks | KenPom | T-Rank | T-Rank |
-| DraftKings / BetMGM, Composite, Edge | yes | yes | **no** |
+| Ranks | KenPom | either | T-Rank |
+| Books in the composite | 2 | **8** | none |
+| Composite and Edge | yes | yes | **no** |
+
+On a measured 43-game slate the key beat scraping on its own ground: 43 games
+with a composite against 38, from eight books instead of two, in seconds
+instead of a minute, and with no browser at all.
 
 Without a key the board still runs; it just has no book columns, and says so
 in a line at the top rather than leaving you to work it out.
@@ -281,12 +297,19 @@ misses turned up one general bug and a handful of school-name facts:
   `university at albany`, but `normalize()` strips "university" as noise before
   the lookup, so the key had to be `at albany`.
 - The Odds API is the odd one out: it attaches mascots ("Saint Louis
-  Billikens"). `cbb/oddsapi.py` also registers each game under its names with
+  Billikens") and sometimes abbreviates ("Loyola (Chi) Ramblers"). `cbb/oddsapi.py` also registers each game under its names with
   trailing words removed, and **drops any pairing two games would both claim**
   rather than guessing — losing a price is a dash, matching the wrong game is a
   wrong number. Sides are compared school-to-school for the same reason: string
   equality on "Wofford Terriers" versus "Wofford" quietly swapped the two
-  prices, which a test now pins.
+  prices, which a test now pins. Each shortened name is also run back through
+  `normalize()`, because the alias table is applied at its end: without that,
+  "SMU Mustangs" stops at `smu` while our own feed says `southern methodist`,
+  and the two can never meet — that one cost four games their prices on a
+  live slate before it was caught.
+
+With those fixed, all 43 of our games matched an Odds API game and all 86
+schools matched a rating.
 
 The four that still don't match are games ESPN's D-I scoreboard doesn't carry —
 mostly non-D-I exhibition opponents. They render with a "no ESPN match" tag and

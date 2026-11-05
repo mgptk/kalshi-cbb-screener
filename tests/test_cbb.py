@@ -26,7 +26,7 @@ from cbb.sections import (
     _participants,
     _slate_day,
 )
-from cbb.oddsapi import OddsApiClient, parse_events
+from cbb.oddsapi import OddsApiClient, _candidates, parse_events
 from cbb.torvik import TorvikClient, parse_ratings as parse_torvik, season_year
 from cbb.view import Pairing, build_board, favourite_side
 from core.models import BookQuote, KalshiContract, KalshiGame, Matchup, QuoteStatus
@@ -443,7 +443,9 @@ def test_torvik_season_turns_over_in_june() -> None:
 
 def _odds_client(events: object = None) -> OddsApiClient:
     client = OddsApiClient(api_key="test")
-    client._index(parse_events(events if events is not None else ODDS_API_EVENTS))
+    games = parse_events(events if events is not None else ODDS_API_EVENTS)
+    client._index(games)
+    client._survey(games)
     client.loaded_ok = True
     return client
 
@@ -452,7 +454,7 @@ def test_odds_api_matches_schools_through_their_mascots() -> None:
     # No other feed here spells a school "Wofford Terriers".
     client = _odds_client()
     matchup = Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
-    quote = client.quote("DraftKings", matchup)
+    quote = client.quote("draftkings", matchup)
     assert quote.status is QuoteStatus.OK
     assert (quote.away_american, quote.home_american) == (900, -1500)
     assert quote.away_prob is not None and quote.away_prob < 0.1  # devigged
@@ -464,14 +466,14 @@ def test_odds_api_keeps_each_price_on_its_own_side() -> None:
     # the favourite's price to the underdog.
     client = _odds_client()
     straight = client.quote(
-        "DraftKings", Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
+        "draftkings", Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
     )
     assert (straight.away_american, straight.home_american) == (900, -1500)
     assert straight.away_prob < straight.home_prob
 
     # And if our feed has the game the other way round, the prices follow.
     flipped = client.quote(
-        "DraftKings", Matchup(away_team="Tennessee", home_team="Wofford", kickoff=None)
+        "draftkings", Matchup(away_team="Tennessee", home_team="Wofford", kickoff=None)
     )
     assert (flipped.away_american, flipped.home_american) == (-1500, 900)
 
@@ -481,14 +483,14 @@ def test_odds_api_keeps_the_blank_reasons_apart() -> None:
     here = Matchup(away_team="Wofford", home_team="Tennessee", kickoff=None)
     # A book with only one side has pulled the moneyline; that is the book's
     # answer, not a failure.
-    assert client.quote("BetMGM", here).status is QuoteStatus.MONEYLINE_OFF
+    assert client.quote("betmgm", here).status is QuoteStatus.MONEYLINE_OFF
     # A game the API does not carry at all.
     away = Matchup(away_team="Duke", home_team="Kansas", kickoff=None)
-    assert client.quote("DraftKings", away).status is QuoteStatus.NOT_ON_BOARD
+    assert client.quote("draftkings", away).status is QuoteStatus.NOT_ON_BOARD
     # And a client that never loaded is a failure, not a missing line.
     dead = OddsApiClient(api_key="")
     dead.load()
-    assert dead.quote("DraftKings", here).status is QuoteStatus.UNAVAILABLE
+    assert dead.quote("draftkings", here).status is QuoteStatus.UNAVAILABLE
 
 
 def test_odds_api_drops_a_pairing_two_games_would_claim() -> None:
@@ -525,6 +527,80 @@ def test_odds_api_drops_a_pairing_two_games_would_claim() -> None:
     assert client.game_for(Matchup(away_team="Duke", home_team="Miami", kickoff=None)) is None
     # The full spelling is still unambiguous.
     assert client.game_for(Matchup(away_team="Duke Blue Devils", home_team="Miami Hurricanes", kickoff=None))
+
+
+def test_odds_api_candidates_go_back_through_the_alias_table() -> None:
+    # The alias table is applied at the end of normalize(), so a truncation
+    # that only becomes an alias once its mascot is gone has to be normalised
+    # again. Without this, "SMU Mustangs" stops at "smu" while our own feed
+    # says "southern methodist", and the two can never meet - which silently
+    # cost four games their prices on a live slate.
+    assert normalize("SMU") in _candidates("SMU Mustangs")
+    assert normalize("LIU") in _candidates("LIU Sharks")
+    assert normalize("Loyola Chicago") in _candidates("Loyola (Chi) Ramblers")
+
+
+def test_odds_api_takes_every_book_the_region_carries() -> None:
+    # One credit buys the whole region, so the composite should be over all
+    # of them, ordered by how much of the slate each one priced.
+    events = [
+        {
+            "home_team": "Tennessee Volunteers",
+            "away_team": "Wofford Terriers",
+            "bookmakers": [
+                {
+                    "key": "fanduel",
+                    "title": "FanDuel",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": "Wofford Terriers", "price": 850},
+                                {"name": "Tennessee Volunteers", "price": -1400},
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "key": "bovada",
+                    "title": "Bovada",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": "Wofford Terriers", "price": 800},
+                                {"name": "Tennessee Volunteers", "price": -1300},
+                            ],
+                        }
+                    ],
+                },
+            ],
+        },
+        {
+            "home_team": "Duke Blue Devils",
+            "away_team": "Kansas Jayhawks",
+            "bookmakers": [
+                {
+                    "key": "fanduel",
+                    "title": "FanDuel",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": "Kansas Jayhawks", "price": 120},
+                                {"name": "Duke Blue Devils", "price": -140},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+    client = _odds_client(events)
+    # FanDuel priced both games, Bovada one, so FanDuel's column comes first.
+    assert client.book_keys() == ["fanduel", "bovada"]
+    assert client.titles["bovada"] == "Bovada"
+    assert client.coverage == {"fanduel": 2, "bovada": 1}
 
 
 def main() -> int:

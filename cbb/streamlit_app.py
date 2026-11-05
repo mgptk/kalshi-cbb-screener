@@ -37,7 +37,8 @@ from cbb.view import Board, Pairing, TICKER, build_board, game_detail
 
 log = logging.getLogger(__name__)
 
-BOOKS = ("DraftKings", "BetMGM")
+FALLBACK_BOOKS = ("DraftKings", "BetMGM")
+"""Only for a refresh that produced no books at all."""
 DAY_CHOICES = (1, 2, 3, 5, 7)
 STALE_AFTER_SECONDS = 90
 
@@ -64,6 +65,11 @@ def browser_scrapes() -> bool:
     return bool(_secret("browser_scrapes", True))
 
 
+def ratings_choice() -> str:
+    """Which ratings to use: see `cbb.refresh.choose_ratings`."""
+    return str(_secret("ratings", "auto") or "auto")
+
+
 def odds_api_key() -> str:
     """The Odds API key, if one is configured.
 
@@ -76,7 +82,12 @@ def odds_api_key() -> str:
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def load(
-    days: int, orderbooks: bool, browser: bool, api_key: str, refresh_token: int
+    days: int,
+    orderbooks: bool,
+    browser: bool,
+    api_key: str,
+    ratings: str,
+    refresh_token: int,
 ) -> Refresh:
     """One fetch, cached.
 
@@ -88,6 +99,7 @@ def load(
         days=days,
         with_orderbooks=orderbooks,
         use_browser=browser,
+        ratings=ratings,
         odds_api_key=api_key or None,
     )
 
@@ -149,6 +161,16 @@ def sidebar() -> dict[str, Any]:
         "show_bpi": show_bpi,
         "show_volume": show_volume,
     }
+
+
+def books_in(section: Any) -> list[str]:
+    """The books this refresh actually produced, in the order they came.
+
+    Scraping gives the two configured boards; The Odds API gives whatever it
+    carries, which is currently eight, ordered by how much of the slate each
+    one priced.
+    """
+    return list(section.book_notes) or list(FALLBACK_BOOKS)
 
 
 def header(data: Refresh) -> None:
@@ -246,6 +268,12 @@ def column_config(board: Board, rank_label: str, rank_source: str) -> dict[str, 
             config[column] = st.column_config.NumberColumn(
                 column, help="BPI minus the Kalshi ask, in points. Positive: Kalshi is cheap."
             )
+        elif column == "Bks":
+            config[column] = st.column_config.NumberColumn(
+                "Bks",
+                help="How many books the composite averages for this game",
+                format="%d",
+            )
         elif column.startswith(f"{rank_label} "):
             config[column] = st.column_config.NumberColumn(
                 column, help=f"{rank_source} rank, 1 to 365 (1 is best)", format="%d"
@@ -266,7 +294,7 @@ def detail(section: Any, selection: Any, board: Board) -> None:
     if row is None:
         return
     with st.container(border=True):
-        for line in game_detail(row, BOOKS):
+        for line in game_detail(row, books_in(section)):
             st.markdown(line)
 
 
@@ -298,24 +326,40 @@ def main() -> None:
     options = sidebar()
     browser = browser_scrapes()
     api_key = odds_api_key()
+    ratings = ratings_choice()
     token = st.session_state.get("refresh_token", 0)
+    # Name what is actually being fetched: a browser scrape takes a minute or
+    # two, and everything else takes seconds.
+    slow = (browser and not api_key) or (browser and ratings in ("auto", "kenpom"))
     waiting = (
-        "Scraping the books, KenPom and Kalshi. This takes a minute or two."
-        if browser
-        else "Fetching Kalshi, ESPN, the odds feed and the ratings."
+        "Fetching Kalshi, ESPN, the odds feed and the ratings."
+        if not slow
+        else "Fetching Kalshi and ESPN, and driving a browser for the rest. "
+        "This takes a minute or two."
     )
     with st.spinner(waiting):
-        data = load(options["days"], options["orderbooks"], browser, api_key, token)
+        data = load(
+            options["days"], options["orderbooks"], browser, api_key, ratings, token
+        )
 
     header(data)
     notes(data.moneylines, browser, bool(api_key))
 
+    books = books_in(data.moneylines)
+    shown = options["show_books"] and (browser or bool(api_key))
+    if shown and len(books) > 1:
+        # Eight books is sixteen columns; most of the time a reader wants a
+        # few. The composite is over all of them either way - this only
+        # chooses what is on screen.
+        with st.sidebar:
+            books = st.multiselect("Books shown", books, default=books)
+
     board = build_board(
         data.moneylines,
-        books=BOOKS,
+        books=books,
         pairing=options["pairing"],
         american=options["american"],
-        show_books=options["show_books"] and (browser or bool(api_key)),
+        show_books=shown,
         show_ranks=True,
         rank_label=data.moneylines.rating_short_label,
         show_composite=browser or bool(api_key),
@@ -341,7 +385,11 @@ def main() -> None:
     )
     detail(data.moneylines, selection, board)
 
-    book_source = "The Odds API" if api_key else ("scraped boards" if browser else "none")
+    all_books = books_in(data.moneylines)
+    book_source = (
+        f"The Odds API ({len(all_books)})" if api_key
+        else ("scraped boards" if browser else "none")
+    )
     st.caption(
         f"Prices: Kalshi · Books: {book_source} · "
         f"Ranks: {data.moneylines.rating_label} · Model: ESPN BPI"

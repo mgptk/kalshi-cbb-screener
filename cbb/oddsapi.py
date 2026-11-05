@@ -42,8 +42,9 @@ MARKET = "h2h"
 
 REGION = "us"
 
-BOOKMAKER_KEYS = {"DraftKings": "draftkings", "BetMGM": "betmgm"}
-"""Display name -> the API's bookmaker key."""
+FALLBACK_BOOKS = {"draftkings": "DraftKings", "betmgm": "BetMGM"}
+"""Only used when the fetch fails: columns to carry the failure, so a dead
+feed shows as two unreadable books rather than no books at all."""
 
 LOW_CREDITS = 50
 """Below this, the board says so rather than waiting to go blank."""
@@ -64,7 +65,11 @@ def _candidates(name: str) -> list[str]:
     for drop in range(0, MAX_WORDS_DROPPED + 1):
         if len(words) - drop < 1:
             break
-        candidate = " ".join(words[: len(words) - drop])
+        # Normalise again rather than just rejoining: the alias table is
+        # applied at the end of normalize(), so a truncation that only now
+        # became an alias - "SMU Mustangs" -> "smu" -> southern methodist -
+        # would otherwise never reach it, and the two feeds could not meet.
+        candidate = normalize(" ".join(words[: len(words) - drop]))
         if len(candidate) >= 3 and candidate not in out:
             out.append(candidate)
     return out
@@ -99,6 +104,8 @@ class ApiGame:
     home_team: str
     prices: dict[str, tuple[Optional[float], Optional[float]]] = field(default_factory=dict)
     """bookmaker key -> (away american, home american)."""
+    titles: dict[str, str] = field(default_factory=dict)
+    """bookmaker key -> the book's display name, as the API spells it."""
 
 
 def parse_events(payload: Any) -> list[ApiGame]:
@@ -130,6 +137,7 @@ def parse_events(payload: Any) -> list[ApiGame]:
                     except (TypeError, ValueError):
                         continue
                 game.prices[key] = (side.get(str(away)), side.get(str(home)))
+                game.titles[key] = str(book.get("title") or key)
         games.append(game)
     return games
 
@@ -140,15 +148,17 @@ class OddsApiClient:
     def __init__(
         self,
         api_key: str,
-        books: Sequence[str] = tuple(BOOKMAKER_KEYS),
         client: Optional[httpx.Client] = None,
         timeout: float = 30.0,
     ) -> None:
         self.api_key = api_key
-        self.books = tuple(books)
         self._client = client
         self._timeout = timeout
         self._games: dict[frozenset[str], ApiGame] = {}
+        self.titles: dict[str, str] = {}
+        """Bookmaker key -> the name to put at the top of its column."""
+        self.coverage: dict[str, int] = {}
+        """Bookmaker key -> how many of the slate's games it priced."""
         self.note: Optional[str] = None
         self.loaded_ok = False
         self.credits_remaining: Optional[int] = None
@@ -165,14 +175,15 @@ class OddsApiClient:
             self.note = "no Odds API key configured"
             return
 
-        keys = ",".join(BOOKMAKER_KEYS[b] for b in self.books if b in BOOKMAKER_KEYS)
+        # No `bookmakers` filter: the whole region costs the same single
+        # credit and returns every book it carries, and a composite over
+        # eight books is worth more than one over two.
         params = {
             "apiKey": self.api_key,
             "regions": REGION,
             "markets": MARKET,
             "oddsFormat": "american",
             "dateFormat": "iso",
-            "bookmakers": keys,
         }
         client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=True)
         try:
@@ -195,6 +206,7 @@ class OddsApiClient:
                 client.close()
 
         self._index(games)
+        self._survey(games)
         self.loaded_ok = True
         if self.credits_remaining is not None and self.credits_remaining <= LOW_CREDITS:
             # Worth saying before the month runs out and the board quietly
@@ -204,10 +216,28 @@ class OddsApiClient:
                 f"(one per refresh)"
             )
         log.info(
-            "the-odds-api: %d games, %s credits left",
+            "the-odds-api: %d games, %d books, %s credits left",
             len(games),
+            len(self.titles),
             self.credits_remaining if self.credits_remaining is not None else "?",
         )
+
+    def _survey(self, games: Sequence[ApiGame]) -> None:
+        """Which books came back, and how much of the slate each one priced.
+
+        The API decides this, not us: a book that has gone quiet simply stops
+        appearing. Coverage orders the columns, so the books that price most
+        of the slate sit nearest the prices they are being compared against.
+        """
+        for game in games:
+            for key, title in game.titles.items():
+                self.titles.setdefault(key, title or key)
+                if game.prices.get(key, (None, None))[0] is not None:
+                    self.coverage[key] = self.coverage.get(key, 0) + 1
+
+    def book_keys(self) -> list[str]:
+        """The books found, most of the slate first, then alphabetically."""
+        return sorted(self.titles, key=lambda k: (-self.coverage.get(k, 0), k))
 
     def _read_quota(self, response: httpx.Response) -> None:
         raw = response.headers.get("x-requests-remaining")
@@ -243,15 +273,15 @@ class OddsApiClient:
     def game_for(self, matchup: Matchup) -> Optional[ApiGame]:
         return self._games.get(frozenset({normalize(matchup.away_team), normalize(matchup.home_team)}))
 
-    def quote(self, display_name: str, matchup: Matchup) -> BookQuote:
+    def quote(self, key: str, matchup: Matchup) -> BookQuote:
         """One book's moneyline on one game, in the usual blank-reason terms."""
+        display_name = self.titles.get(key, key)
         if not self.loaded_ok:
             return BookQuote.unavailable(display_name, self.note or "The Odds API could not be read")
         game = self.game_for(matchup)
         if game is None:
             return BookQuote.not_on_board(display_name)
-        key = BOOKMAKER_KEYS.get(display_name)
-        if key is None or key not in game.prices:
+        if key not in game.prices:
             return BookQuote.not_on_board(display_name)
 
         away, home = game.prices[key]
@@ -268,10 +298,11 @@ class OddsApiClient:
 class OddsApiBook:
     """A `BookScraper` view onto the shared client, one per book."""
 
-    def __init__(self, name: str, client: OddsApiClient) -> None:
+    def __init__(self, key: str, name: str, client: OddsApiClient) -> None:
+        self.key = key
         self.name = name
         self._client = client
-        self.source = f"the-odds-api:{BOOKMAKER_KEYS.get(name, name.lower())}"
+        self.source = f"the-odds-api:{key}"
 
     @property
     def note(self) -> Optional[str]:
@@ -281,13 +312,23 @@ class OddsApiBook:
         self._client.load()
 
     def quote(self, matchup: Matchup) -> BookQuote:
-        return self._client.quote(self.name, matchup)
+        return self._client.quote(self.key, matchup)
 
 
-def odds_api_books(api_key: str, books: Sequence[str] = tuple(BOOKMAKER_KEYS)) -> list[OddsApiBook]:
-    """The books in display order, all reading from one request."""
-    client = OddsApiClient(api_key=api_key, books=books)
-    return [OddsApiBook(name, client) for name in books]
+def odds_api_books(api_key: str, client: Optional[OddsApiClient] = None) -> list[OddsApiBook]:
+    """Every book the API carries, in coverage order, from one request.
+
+    Which books exist is only known once the request has been made, so this
+    fetches before deciding the columns. A fetch that failed still yields the
+    two books everyone expects, each carrying the reason, so the board reports
+    a dead feed instead of quietly having no book columns at all.
+    """
+    source = client or OddsApiClient(api_key=api_key)
+    source.load()
+    found = source.book_keys()
+    if not found:
+        return [OddsApiBook(key, name, source) for key, name in FALLBACK_BOOKS.items()]
+    return [OddsApiBook(key, source.titles[key], source) for key in found]
 
 
 __all__ = [
@@ -295,6 +336,6 @@ __all__ = [
     "OddsApiClient",
     "odds_api_books",
     "parse_events",
-    "BOOKMAKER_KEYS",
+    "FALLBACK_BOOKS",
     "SPORT",
 ]

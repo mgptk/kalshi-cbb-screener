@@ -86,6 +86,8 @@ ALIASES: dict[str, str] = {
     "illinois chicago": "uic",
     "loyola md": "loyola maryland",
     "mcneese state": "mcneese",
+    # The Odds API's abbreviation, left behind once its mascot is dropped.
+    "loyola chi": "loyola chicago",
 }
 
 
